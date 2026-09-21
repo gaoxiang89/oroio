@@ -377,84 +377,171 @@ function Invalidate-Cache {
     }
 }
 
-function Fetch-Usage {
-    param([string]$Key)
-    
-    $result = @{
+function New-EmptyUsage {
+    return @{
+        MODE = ""
+        DISPLAY = ""
         BALANCE = 0
         BALANCE_NUM = 0
         TOTAL = 0
         USED = 0
         EXPIRES = "?"
+        EXTRA_CENTS = 0
+        CORE_USED = 0
+        OVERAGE_PREF = ""
         RAW = ""
     }
-    
+}
+
+function ConvertFrom-RateLimits {
+    param($Data)
+    $result = New-EmptyUsage
+    $now = [DateTimeOffset]::UtcNow
+    $labels = @(
+        @{ Key = "fiveHour"; Label = "5h" },
+        @{ Key = "weekly"; Label = "7d" },
+        @{ Key = "monthly"; Label = "30d" }
+    )
+
+    function Get-WindowInfo($window) {
+        $pct = 0.0
+        $rem = $null
+        $end = $null
+        if ($null -ne $window) {
+            if ($null -ne $window.usedPercent) { $pct = [double]$window.usedPercent }
+            if ($null -ne $window.secondsRemaining) { $rem = [double]$window.secondsRemaining }
+            $end = $window.windowEnd
+            if ($null -ne $rem -and $rem -le 0) { $pct = 0 }
+            elseif ($null -eq $rem -and $null -ne $end) {
+                try {
+                    $endDt = [DateTimeOffset]::Parse($end.ToString())
+                    if ($endDt -le $now) { $pct = 0 }
+                } catch {}
+            }
+        }
+        if ($pct -lt 0) { $pct = 0 }
+        if ($pct -gt 100) { $pct = 100 }
+        return @{ Pct = $pct; Rem = $rem; End = $end }
+    }
+
+    $std = @()
+    foreach ($item in $labels) {
+        $info = Get-WindowInfo $Data.limits.standard.($item.Key)
+        $std += @{ Label = $item.Label; Pct = $info.Pct; Rem = $info.Rem; End = $info.End }
+    }
+    $bot = $std | Sort-Object @{ Expression = { -$_.Pct } }, @{ Expression = { if ($null -eq $_.Rem) { [double]::PositiveInfinity } else { $_.Rem } } } | Select-Object -First 1
+    $used = [int][Math]::Round($bot.Pct)
+    $parts = foreach ($w in $std) { "{0} {1}%" -f $w.Label, [int][Math]::Round($w.Pct) }
+    $expires = "?"
+    if ($null -ne $bot.End) {
+        try { $expires = ([DateTimeOffset]::Parse($bot.End.ToString())).ToString("yyyy-MM-dd") } catch {}
+    } elseif ($null -ne $bot.Rem) {
+        $expires = $now.AddSeconds($bot.Rem).ToString("yyyy-MM-dd")
+    }
+    $coreUsed = 0
+    if ($null -ne $Data.limits.core) {
+        $coreMax = 0.0
+        foreach ($item in $labels) {
+            $info = Get-WindowInfo $Data.limits.core.($item.Key)
+            if ($info.Pct -gt $coreMax) { $coreMax = $info.Pct }
+        }
+        $coreUsed = [int][Math]::Round($coreMax)
+    }
+    $result.MODE = "rate"
+    $result.DISPLAY = ($parts -join " ")
+    $result.TOTAL = 100
+    $result.USED = $used
+    $result.BALANCE_NUM = 100 - $used
+    $result.BALANCE = $result.BALANCE_NUM
+    $result.EXPIRES = $expires
+    $result.EXTRA_CENTS = if ($null -ne $Data.extraUsageBalanceCents) { [int]$Data.extraUsageBalanceCents } else { 0 }
+    $result.CORE_USED = $coreUsed
+    $result.OVERAGE_PREF = [string]$Data.overagePreference
+    return $result
+}
+
+function ConvertFrom-TokenUsage {
+    param($Data)
+    $result = New-EmptyUsage
+    $result.MODE = "tokens"
+    $usage = $Data.usage
+    if ($null -eq $usage) {
+        $result.RAW = "no_usage"
+        return $result
+    }
+    $section = $null
+    foreach ($s in @($usage.standard, $usage.premium, $usage.total, $usage.main)) {
+        if ($null -ne $s) { $section = $s; break }
+    }
+    if ($null -ne $section) {
+        $total = $section.totalAllowance
+        if ($null -eq $total) { $total = $section.basicAllowance }
+        if ($null -eq $total) { $total = $section.allowance }
+        $used = $section.orgTotalTokensUsed
+        if ($null -eq $used) { $used = $section.used }
+        if ($null -eq $used) { $used = $section.tokensUsed }
+        if ($null -eq $used) { $used = 0 }
+        if ($null -ne $total) {
+            $result.TOTAL = [long]$total
+            $result.USED = [long]$used
+            $result.BALANCE_NUM = [long]($total - $used)
+            $result.BALANCE = $result.BALANCE_NUM
+        }
+    }
+    $expRaw = $usage.endDate
+    if ($null -eq $expRaw) { $expRaw = $usage.expire_at }
+    if ($null -eq $expRaw) { $expRaw = $usage.expires_at }
+    if ($null -ne $expRaw) {
+        try {
+            if ($expRaw -match '^\d+$') {
+                $ts = [long]$expRaw / 1000
+                $date = [DateTimeOffset]::FromUnixTimeSeconds([long]$ts)
+                $result.EXPIRES = $date.ToString("yyyy-MM-dd")
+            } else { $result.EXPIRES = $expRaw.ToString() }
+        } catch { $result.EXPIRES = $expRaw.ToString() }
+    }
+    return $result
+}
+
+function Fetch-Usage {
+    param([string]$Key)
+
+    $result = New-EmptyUsage
     $headers = @{
         "Authorization" = "Bearer $Key"
         "User-Agent" = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        "Accept" = "application/json"
     }
-    
+
+    for ($attempt = 1; $attempt -le $script:CURL_RETRIES; $attempt++) {
+        try {
+            $response = Invoke-RestMethod -Uri "https://app.factory.ai/api/billing/limits" `
+                -Headers $headers -Method Get -TimeoutSec $script:CURL_TIMEOUT -ErrorAction Stop
+            if ($response.usesTokenRateLimitsBilling -and $null -ne $response.limits) {
+                return ConvertFrom-RateLimits -Data $response
+            }
+            break
+        }
+        catch [System.Net.WebException] {
+            $statusCode = [int]$_.Exception.Response.StatusCode
+            if ($statusCode -eq 404) { break }
+            if ($statusCode -ge 400 -and $statusCode -lt 500) {
+                $result.RAW = "http_$statusCode"
+                $result.EXPIRES = "Invalid key"
+                return $result
+            }
+            if ($attempt -lt $script:CURL_RETRIES) { Start-Sleep -Milliseconds 500 }
+        }
+        catch {
+            if ($attempt -lt $script:CURL_RETRIES) { Start-Sleep -Milliseconds 500 }
+        }
+    }
+
     for ($attempt = 1; $attempt -le $script:CURL_RETRIES; $attempt++) {
         try {
             $response = Invoke-RestMethod -Uri "https://app.factory.ai/api/organization/members/chat-usage" `
                 -Headers $headers -Method Get -TimeoutSec $script:CURL_TIMEOUT -ErrorAction Stop
-            
-            $usage = $response.usage
-            if ($null -eq $usage) {
-                $result.RAW = "no_usage"
-                return $result
-            }
-            
-            $section = $null
-            foreach ($s in @($usage.standard, $usage.premium, $usage.total, $usage.main)) {
-                if ($null -ne $s) {
-                    $section = $s
-                    break
-                }
-            }
-            
-            if ($null -ne $section) {
-                $total = $section.totalAllowance
-                if ($null -eq $total) { $total = $section.basicAllowance }
-                if ($null -eq $total) { $total = $section.allowance }
-                
-                $used = $section.orgTotalTokensUsed
-                if ($null -eq $used) { $used = $section.used }
-                if ($null -eq $used) { $used = $section.tokensUsed }
-                if ($null -eq $used) { $used = 0 }
-                
-                $overage = $section.orgOverageUsed
-                if ($null -eq $overage) { $overage = 0 }
-                $used = $used + $overage
-                
-                if ($null -ne $total) {
-                    $result.TOTAL = [long]$total
-                    $result.USED = [long]$used
-                    $result.BALANCE_NUM = [long]($total - $used)
-                    $result.BALANCE = $result.BALANCE_NUM
-                }
-            }
-            
-            $expRaw = $usage.endDate
-            if ($null -eq $expRaw) { $expRaw = $usage.expire_at }
-            if ($null -eq $expRaw) { $expRaw = $usage.expires_at }
-            
-            if ($null -ne $expRaw) {
-                try {
-                    if ($expRaw -match '^\d+$') {
-                        $ts = [long]$expRaw / 1000
-                        $date = [DateTimeOffset]::FromUnixTimeSeconds([long]$ts)
-                        $result.EXPIRES = $date.ToString("yyyy-MM-dd")
-                    }
-                    else {
-                        $result.EXPIRES = $expRaw.ToString()
-                    }
-                }
-                catch {
-                    $result.EXPIRES = $expRaw.ToString()
-                }
-            }
-            return $result
+            return ConvertFrom-TokenUsage -Data $response
         }
         catch [System.Net.WebException] {
             $statusCode = [int]$_.Exception.Response.StatusCode
@@ -463,17 +550,13 @@ function Fetch-Usage {
                 $result.EXPIRES = "Invalid key"
                 return $result
             }
-            if ($attempt -lt $script:CURL_RETRIES) {
-                Start-Sleep -Milliseconds 500
-            }
+            if ($attempt -lt $script:CURL_RETRIES) { Start-Sleep -Milliseconds 500 }
         }
         catch {
-            if ($attempt -lt $script:CURL_RETRIES) {
-                Start-Sleep -Milliseconds 500
-            }
+            if ($attempt -lt $script:CURL_RETRIES) { Start-Sleep -Milliseconds 500 }
         }
     }
-    
+
     $result.RAW = "http_error"
     $result.EXPIRES = "Invalid key"
     return $result
@@ -570,11 +653,56 @@ function Fetch-UsageParallel {
     $scriptBlock = {
         param([string]$Key, [int]$Timeout, [int]$Retries)
         $result = @{
-            BALANCE = 0; BALANCE_NUM = 0; TOTAL = 0; USED = 0; EXPIRES = "?"; RAW = ""
+            MODE = ""; DISPLAY = ""; BALANCE = 0; BALANCE_NUM = 0; TOTAL = 0; USED = 0
+            EXPIRES = "?"; EXTRA_CENTS = 0; CORE_USED = 0; OVERAGE_PREF = ""; RAW = ""
         }
         $headers = @{
             "Authorization" = "Bearer $Key"
             "User-Agent" = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            "Accept" = "application/json"
+        }
+        $useLegacy = $true
+        for ($attempt = 1; $attempt -le $Retries; $attempt++) {
+            try {
+                $response = Invoke-RestMethod -Uri "https://app.factory.ai/api/billing/limits" `
+                    -Headers $headers -Method Get -TimeoutSec $Timeout -ErrorAction Stop
+                if ($response.usesTokenRateLimitsBilling -and $null -ne $response.limits) {
+                    $std = $response.limits.standard
+                    $five = 0; $week = 0; $month = 0
+                    if ($null -ne $std.fiveHour.usedPercent) { $five = [int][Math]::Round([double]$std.fiveHour.usedPercent) }
+                    if ($null -ne $std.weekly.usedPercent) { $week = [int][Math]::Round([double]$std.weekly.usedPercent) }
+                    if ($null -ne $std.monthly.usedPercent) { $month = [int][Math]::Round([double]$std.monthly.usedPercent) }
+                    $used = $five; if ($week -gt $used) { $used = $week }; if ($month -gt $used) { $used = $month }
+                    $result.MODE = "rate"
+                    $result.DISPLAY = "5h $five% 7d $week% 30d $month%"
+                    $result.TOTAL = 100
+                    $result.USED = $used
+                    $result.BALANCE_NUM = 100 - $used
+                    $result.BALANCE = $result.BALANCE_NUM
+                    $end = $null
+                    if ($used -eq $five) { $end = $std.fiveHour.windowEnd }
+                    elseif ($used -eq $week) { $end = $std.weekly.windowEnd }
+                    else { $end = $std.monthly.windowEnd }
+                    if ($null -ne $end) {
+                        try { $result.EXPIRES = ([DateTimeOffset]::Parse($end.ToString())).ToString("yyyy-MM-dd") } catch {}
+                    }
+                    if ($null -ne $response.extraUsageBalanceCents) { $result.EXTRA_CENTS = [int]$response.extraUsageBalanceCents }
+                    $result.OVERAGE_PREF = [string]$response.overagePreference
+                    return $result
+                }
+                $useLegacy = $true
+                break
+            } catch [System.Net.WebException] {
+                $statusCode = [int]$_.Exception.Response.StatusCode
+                if ($statusCode -eq 404) { break }
+                if ($statusCode -ge 400 -and $statusCode -lt 500) {
+                    $result.RAW = "http_$statusCode"; $result.EXPIRES = "Invalid key"
+                    return $result
+                }
+                if ($attempt -lt $Retries) { Start-Sleep -Milliseconds 500 }
+            } catch {
+                if ($attempt -lt $Retries) { Start-Sleep -Milliseconds 500 }
+            }
         }
         for ($attempt = 1; $attempt -le $Retries; $attempt++) {
             try {
@@ -594,10 +722,8 @@ function Fetch-UsageParallel {
                     if ($null -eq $used) { $used = $section.used }
                     if ($null -eq $used) { $used = $section.tokensUsed }
                     if ($null -eq $used) { $used = 0 }
-                    $overage = $section.orgOverageUsed
-                    if ($null -eq $overage) { $overage = 0 }
-                    $used = $used + $overage
                     if ($null -ne $total) {
+                        $result.MODE = "tokens"
                         $result.TOTAL = [long]$total
                         $result.USED = [long]$used
                         $result.BALANCE_NUM = [long]($total - $used)
@@ -685,7 +811,7 @@ function Cmd-List {
         $maskedKey = Mask-Key -Key $key
         
         $bar = Render-Bar -Remain $usage.BALANCE_NUM -Total $usage.TOTAL -Length 10
-        $usageText = "{0}/{1}" -f (Format-CompactNumber $usage.USED), (Format-CompactNumber $usage.TOTAL)
+        $usageText = if ($usage.DISPLAY) { $usage.DISPLAY } else { "{0}/{1}" -f (Format-CompactNumber $usage.USED), (Format-CompactNumber $usage.TOTAL) }
         $usageDisplay = "$bar $usageText"
         
         $exp = $usage.EXPIRES
@@ -728,7 +854,7 @@ function Cmd-Current {
     Write-Host "  Key:    $key"
     
     $bar = Render-Bar -Remain $usage.BALANCE_NUM -Total $usage.TOTAL -Length 20
-    $usageText = "{0}/{1}" -f (Format-CompactNumber $usage.USED), (Format-CompactNumber $usage.TOTAL)
+    $usageText = if ($usage.DISPLAY) { $usage.DISPLAY } else { "{0}/{1}" -f (Format-CompactNumber $usage.USED), (Format-CompactNumber $usage.TOTAL) }
     Write-Host "  Usage:  $bar $usageText"
     Write-Host "  Expiry: $($usage.EXPIRES)"
     Write-Host ""

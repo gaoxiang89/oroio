@@ -4,6 +4,8 @@ export interface KeyUsage {
   used: number | null;
   expires: string;
   raw: string;
+  mode?: string;
+  display?: string;
 }
 
 export interface KeyInfo {
@@ -157,6 +159,8 @@ function parseUsageInfo(text: string): KeyUsage {
     used: data['USED'] ? parseFloat(data['USED']) : null,
     expires: data['EXPIRES'] || '?',
     raw: data['RAW'] || '',
+    mode: data['MODE'] || '',
+    display: data['DISPLAY'] || '',
   };
 }
 
