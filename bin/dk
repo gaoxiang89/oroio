@@ -947,7 +947,7 @@ cmd_list() {
     else
       info="${FETCH_INFOS[$((i-1))]}"
     fi
-    local bal balnum total used exp exp_full raw display mode
+    local bal="" balnum="" total="" used="" exp="" exp_full="" raw="" display="" mode=""
     while IFS='=' read -r k v; do
       case "$k" in
         BALANCE) bal="$v";;
@@ -1110,7 +1110,7 @@ cmd_current() {
   if (( cur > ${#KEYS[@]} )); then cur=1; fi
   IFS=$'\t' read -r key label <<<"${KEYS[$((cur-1))]}"
   info=$(fetch_usage "$key")
-  local bal exp exp_full balnum total used raw display alert=0
+  local bal="" exp="" exp_full="" balnum="" total="" used="" raw="" display="" alert=0
   while IFS='=' read -r k v; do
     case "$k" in
       BALANCE) bal="$v";;
@@ -1254,7 +1254,7 @@ cmd_use() {
       ((++i))
       IFS=$'\t' read -r key label <<<"$line"
       info="${FETCH_INFOS[$((i-1))]}"
-      local balnum total used exp raw display
+      local balnum="" total="" used="" exp="" raw="" display=""
       while IFS='=' read -r k v; do
         case "$k" in
           BALANCE_NUM) balnum="$v";;
@@ -1382,7 +1382,7 @@ cmd_run() {
   # 尝试从缓存读取用量信息显示，不阻塞启动
   if cache_load_infos 2>/dev/null && [ -n "${FETCH_INFOS[$((idx-1))]:-}" ]; then
     local info="${FETCH_INFOS[$((idx-1))]}"
-    local balnum total used raw display
+    local balnum="" total="" used="" raw="" display=""
     while IFS='=' read -r k v; do
       case "$k" in
         BALANCE_NUM) balnum="$v";;
