@@ -4,7 +4,7 @@
 .DESCRIPTION
     Uninstalls and reinstalls dk to update to latest version
 .EXAMPLE
-    irm https://raw.githubusercontent.com/notdp/oroio/main/reinstall.ps1 | iex
+    irm https://raw.githubusercontent.com/gaoxiang89/oroio/main/reinstall.ps1 | iex
 #>
 
 $ErrorActionPreference = "Stop"
@@ -19,8 +19,8 @@ try {
     $uninstallScript = Join-Path $tempDir "uninstall.ps1"
     $installScript = Join-Path $tempDir "install.ps1"
     
-    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/notdp/oroio/main/uninstall.ps1?ts=$ts" -OutFile $uninstallScript -UseBasicParsing
-    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/notdp/oroio/main/install.ps1?ts=$ts" -OutFile $installScript -UseBasicParsing
+    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/gaoxiang89/oroio/main/uninstall.ps1?ts=$ts" -OutFile $uninstallScript -UseBasicParsing
+    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/gaoxiang89/oroio/main/install.ps1?ts=$ts" -OutFile $installScript -UseBasicParsing
     
     # Uninstall (force, keep data)
     Write-Host "Uninstalling old version..." -ForegroundColor Cyan

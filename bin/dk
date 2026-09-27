@@ -1264,7 +1264,7 @@ cmd_rm() {
 }
 
 cmd_reinstall() {
-  local script_url="https://raw.githubusercontent.com/notdp/oroio/main/reinstall.sh"
+  local script_url="https://raw.githubusercontent.com/gaoxiang89/oroio/main/reinstall.sh"
 
   echo "从远程获取 reinstall.sh ..."
   if command -v curl >/dev/null 2>&1; then
@@ -1277,7 +1277,7 @@ cmd_reinstall() {
 }
 
 cmd_uninstall() {
-  local script_url="https://raw.githubusercontent.com/notdp/oroio/main/uninstall.sh"
+  local script_url="https://raw.githubusercontent.com/gaoxiang89/oroio/main/uninstall.sh"
 
   echo "从远程获取 uninstall.sh ..."
   if command -v curl >/dev/null 2>&1; then

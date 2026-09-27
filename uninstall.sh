@@ -12,7 +12,7 @@ Usage: uninstall.sh [options]
 示例:
   ./uninstall.sh
   ./uninstall.sh --prefix /usr/local/bin
-  curl -fsSL https://raw.githubusercontent.com/notdp/oroio/main/uninstall.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/gaoxiang89/oroio/main/uninstall.sh | bash
 USAGE
 }
 

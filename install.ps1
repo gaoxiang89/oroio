@@ -5,14 +5,14 @@
     Downloads and installs dk.ps1 to %LOCALAPPDATA%\oroio\bin
     Adds to PATH and configures PowerShell profile
 .EXAMPLE
-    irm https://raw.githubusercontent.com/notdp/oroio/main/install.ps1 | iex
+    irm https://raw.githubusercontent.com/gaoxiang89/oroio/main/install.ps1 | iex
 #>
 
 $ErrorActionPreference = "Stop"
 
 $INSTALL_DIR = Join-Path $env:LOCALAPPDATA "oroio\bin"
 $OROIO_DIR = Join-Path $env:USERPROFILE ".oroio"
-$DK_URL = "https://raw.githubusercontent.com/notdp/oroio/main/bin/dk.ps1"
+$DK_URL = "https://raw.githubusercontent.com/gaoxiang89/oroio/main/bin/dk.ps1"
 
 function Write-Info {
     param([string]$Message)
@@ -49,7 +49,7 @@ $dkContent = Get-Content $dkPath -Raw -Encoding UTF8
 Set-Content -Path $dkPath -Value $dkContent -Encoding UTF8
 
 # Download serve.py (for dk serve)
-$serveUrl = "https://raw.githubusercontent.com/notdp/oroio/main/bin/serve.py"
+$serveUrl = "https://raw.githubusercontent.com/gaoxiang89/oroio/main/bin/serve.py"
 $servePath = Join-Path $INSTALL_DIR "serve.py"
 Invoke-WebRequest -Uri "$serveUrl`?ts=$ts" -OutFile $servePath -UseBasicParsing
 

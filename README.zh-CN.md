@@ -21,13 +21,13 @@ dk 集中管理多个 Factory Droid API 密钥，实时追踪用量和到期时�
 **macOS / Linux：**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/notdp/oroio/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/gaoxiang89/oroio/main/install.sh | bash
 ```
 
 **Windows (PowerShell)：**
 
 ```powershell
-irm https://raw.githubusercontent.com/notdp/oroio/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/gaoxiang89/oroio/main/install.ps1 | iex
 ```
 
 安装程序会在 shell 中添加 `droid` 函数。重启终端后直接运行 `droid` 即可。
@@ -115,11 +115,11 @@ dk reinstall
 或手动执行：
 ```bash
 # macOS/Linux
-curl -fsSL https://raw.githubusercontent.com/notdp/oroio/main/reinstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/gaoxiang89/oroio/main/reinstall.sh | bash
 ```
 ```powershell
 # Windows
-irm https://raw.githubusercontent.com/notdp/oroio/main/reinstall.ps1 | iex
+irm https://raw.githubusercontent.com/gaoxiang89/oroio/main/reinstall.ps1 | iex
 ```
 
 ### 卸载
@@ -131,11 +131,11 @@ dk uninstall
 或手动执行：
 ```bash
 # macOS/Linux
-curl -fsSL https://raw.githubusercontent.com/notdp/oroio/main/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/gaoxiang89/oroio/main/uninstall.sh | bash
 ```
 ```powershell
 # Windows
-irm https://raw.githubusercontent.com/notdp/oroio/main/uninstall.ps1 | iex
+irm https://raw.githubusercontent.com/gaoxiang89/oroio/main/uninstall.ps1 | iex
 ```
 
 ---

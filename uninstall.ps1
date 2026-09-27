@@ -5,7 +5,7 @@
     Removes dk.ps1 from %LOCALAPPDATA%\oroio\bin
     Optionally removes data directory and PATH entry
 .EXAMPLE
-    irm https://raw.githubusercontent.com/notdp/oroio/main/uninstall.ps1 | iex
+    irm https://raw.githubusercontent.com/gaoxiang89/oroio/main/uninstall.ps1 | iex
 #>
 
 param(

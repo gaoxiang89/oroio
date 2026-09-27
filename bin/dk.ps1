@@ -955,13 +955,13 @@ function Cmd-Serve {
 function Cmd-Reinstall {
     Write-Host "正在重新安装 dk..."
     $ts = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-    Invoke-Expression (Invoke-WebRequest -Uri "https://raw.githubusercontent.com/notdp/oroio/main/install.ps1?ts=$ts" -UseBasicParsing).Content
+    Invoke-Expression (Invoke-WebRequest -Uri "https://raw.githubusercontent.com/gaoxiang89/oroio/main/install.ps1?ts=$ts" -UseBasicParsing).Content
 }
 
 function Cmd-Uninstall {
     Write-Host "正在卸载 dk..."
     $ts = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-    Invoke-Expression (Invoke-WebRequest -Uri "https://raw.githubusercontent.com/notdp/oroio/main/uninstall.ps1?ts=$ts" -UseBasicParsing).Content
+    Invoke-Expression (Invoke-WebRequest -Uri "https://raw.githubusercontent.com/gaoxiang89/oroio/main/uninstall.ps1?ts=$ts" -UseBasicParsing).Content
 }
 
 # Main entry

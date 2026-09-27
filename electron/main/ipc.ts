@@ -456,8 +456,8 @@ Droid instructions here.
       // file not found
     }
     const installCmd = platform === 'win32'
-      ? 'irm https://raw.githubusercontent.com/notdp/oroio/main/install.ps1 | iex'
-      : 'curl -fsSL https://raw.githubusercontent.com/notdp/oroio/main/install.sh | bash';
+      ? 'irm https://raw.githubusercontent.com/gaoxiang89/oroio/main/install.ps1 | iex'
+      : 'curl -fsSL https://raw.githubusercontent.com/gaoxiang89/oroio/main/install.sh | bash';
     return { installed, installCmd, platform };
   });
 

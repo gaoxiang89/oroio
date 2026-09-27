@@ -14,7 +14,7 @@ Usage: reinstall.sh [options]
 示例:
   ./reinstall.sh
   ./reinstall.sh --prefix /usr/local/bin
-  curl -fsSL https://raw.githubusercontent.com/notdp/oroio/main/reinstall.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/gaoxiang89/oroio/main/reinstall.sh | bash
 USAGE
 }
 
@@ -37,7 +37,7 @@ fetch_script() {
 
   command -v curl >/dev/null 2>&1 || die "需要 curl 以下载 $name"
 
-  local url="https://raw.githubusercontent.com/notdp/oroio/main/$name"
+  local url="https://raw.githubusercontent.com/gaoxiang89/oroio/main/$name"
   local ts
   ts=$(date +%s)
   # 打印到 stderr，避免被命令替换捕获

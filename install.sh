@@ -13,7 +13,7 @@ Usage: install.sh [options]
 示例:
   ./install.sh
   ./install.sh --prefix /usr/local/bin
-  curl -fsSL https://raw.githubusercontent.com/notdp/oroio/main/install.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/gaoxiang89/oroio/main/install.sh | bash
 USAGE
 }
 
@@ -70,7 +70,7 @@ fetch_web_assets() {
 }
 
 locate_sources() {
-  local base="https://raw.githubusercontent.com/notdp/oroio/main/bin"
+  local base="https://raw.githubusercontent.com/gaoxiang89/oroio/main/bin"
   fetch_component "dk" "$base/dk" DK_SRC
   fetch_component "serve.py" "$base/serve.py" SERVE_SRC
   fetch_web_assets

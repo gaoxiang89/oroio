@@ -21,13 +21,13 @@ dk manages multiple Factory Droid API keys in one place. It tracks usage limits 
 **macOS / Linux:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/notdp/oroio/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/gaoxiang89/oroio/main/install.sh | bash
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-irm https://raw.githubusercontent.com/notdp/oroio/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/gaoxiang89/oroio/main/install.ps1 | iex
 ```
 
 The installer adds a `droid` function to your shell. Restart your terminal, then just run `droid`.
@@ -115,11 +115,11 @@ dk reinstall
 Or manually:
 ```bash
 # macOS/Linux
-curl -fsSL https://raw.githubusercontent.com/notdp/oroio/main/reinstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/gaoxiang89/oroio/main/reinstall.sh | bash
 ```
 ```powershell
 # Windows
-irm https://raw.githubusercontent.com/notdp/oroio/main/reinstall.ps1 | iex
+irm https://raw.githubusercontent.com/gaoxiang89/oroio/main/reinstall.ps1 | iex
 ```
 
 ### Uninstalling
@@ -131,11 +131,11 @@ dk uninstall
 Or manually:
 ```bash
 # macOS/Linux
-curl -fsSL https://raw.githubusercontent.com/notdp/oroio/main/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/gaoxiang89/oroio/main/uninstall.sh | bash
 ```
 ```powershell
 # Windows
-irm https://raw.githubusercontent.com/notdp/oroio/main/uninstall.ps1 | iex
+irm https://raw.githubusercontent.com/gaoxiang89/oroio/main/uninstall.ps1 | iex
 ```
 
 ---
