@@ -117,47 +117,191 @@ def encrypt_keys(keys: list, keys_file: str):
             check=True
         )
 
-API_URL = 'https://app.factory.ai/api/organization/members/chat-usage'
+LIMITS_URL = 'https://app.factory.ai/api/billing/limits'
+USAGE_URL = 'https://app.factory.ai/api/organization/members/chat-usage'
 API_TIMEOUT = 8
 API_RETRIES = 3
 FACTORY_DIR = os.path.join(os.path.expanduser('~'), '.factory')
+WINDOW_KEYS = (('fiveHour', '5h'), ('weekly', '7d'), ('monthly', '30d'))
+
+def _factory_headers(key: str) -> dict:
+    return {
+        'Authorization': f'Bearer {key}',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'application/json',
+    }
+
+def _empty_usage() -> dict:
+    return {
+        'MODE': '',
+        'DISPLAY': '',
+        'BALANCE': 0,
+        'BALANCE_NUM': 0,
+        'TOTAL': 0,
+        'USED': 0,
+        'EXPIRES': '?',
+        'EXTRA_CENTS': 0,
+        'CORE_USED': 0,
+        'OVERAGE_PREF': '',
+        'RAW': '',
+    }
+
+def _fmt_pct(p) -> str:
+    p = float(p)
+    r = round(p)
+    if abs(p - r) < 0.05:
+        return str(int(r))
+    return f'{p:.1f}'
+
+def _parse_iso(end):
+    if not end:
+        return None
+    try:
+        from datetime import datetime, timezone
+        s = str(end).replace('Z', '+00:00')
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+def _window_pct(w, now) -> float:
+    if not isinstance(w, dict):
+        return 0.0
+    try:
+        pct = float(w.get('usedPercent') or 0)
+    except (TypeError, ValueError):
+        pct = 0.0
+    rem = w.get('secondsRemaining')
+    if rem is not None:
+        try:
+            if float(rem) <= 0:
+                return 0.0
+        except (TypeError, ValueError):
+            pass
+    else:
+        dt = _parse_iso(w.get('windowEnd'))
+        if dt is not None and dt <= now:
+            return 0.0
+    return min(100.0, max(0.0, pct))
+
+def _pool_windows(pool, now):
+    pool = pool if isinstance(pool, dict) else {}
+    out = []
+    for key, label in WINDOW_KEYS:
+        w = pool.get(key)
+        if not isinstance(w, dict):
+            w = {}
+        rem = w.get('secondsRemaining')
+        try:
+            rem_n = float(rem) if rem is not None else None
+        except (TypeError, ValueError):
+            rem_n = None
+        out.append({'pct': _window_pct(w, now), 'label': label, 'w': w, 'rem': rem_n})
+    return out
+
+def _bottleneck(windows):
+    def sort_key(item):
+        rem = item['rem'] if item['rem'] is not None else 1e18
+        return (-item['pct'], rem)
+    return sorted(windows, key=sort_key)[0]
+
+def parse_rate_limits(data: dict) -> dict:
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    limits = data.get('limits') or {}
+    std = _pool_windows(limits.get('standard'), now)
+    core = _pool_windows(limits.get('core'), now)
+    bot = _bottleneck(std)
+    used = int(round(bot['pct']))
+    remain = 100 - used
+    display = ' '.join(f"{w['label']} {_fmt_pct(w['pct'])}%" for w in std)
+    dt = _parse_iso(bot['w'].get('windowEnd'))
+    if dt is None and bot['rem'] is not None:
+        try:
+            dt = datetime.fromtimestamp(now.timestamp() + float(bot['rem']), tz=timezone.utc)
+        except Exception:
+            dt = None
+    result = _empty_usage()
+    result['MODE'] = 'rate'
+    result['DISPLAY'] = display
+    result['TOTAL'] = 100
+    result['USED'] = used
+    result['BALANCE_NUM'] = remain
+    result['BALANCE'] = remain
+    result['EXPIRES'] = dt.strftime('%Y-%m-%d') if dt else '?'
+    result['EXTRA_CENTS'] = int(data.get('extraUsageBalanceCents') or 0)
+    result['CORE_USED'] = int(round(_bottleneck(core)['pct'])) if core else 0
+    result['OVERAGE_PREF'] = data.get('overagePreference') or ''
+    return result
+
+def parse_token_usage(data: dict) -> dict:
+    result = _empty_usage()
+    result['MODE'] = 'tokens'
+    usage = data.get('usage')
+    if not usage:
+        result['RAW'] = 'no_usage'
+        return result
+    section = usage.get('standard') or usage.get('premium') or usage.get('total') or usage.get('main')
+    if section:
+        total = section.get('totalAllowance') or section.get('basicAllowance') or section.get('allowance')
+        # orgOverageUsed is already included in orgTotalTokensUsed
+        used = section.get('orgTotalTokensUsed') or section.get('used') or section.get('tokensUsed') or 0
+        if total is not None:
+            result['TOTAL'] = int(total)
+            result['USED'] = int(used)
+            result['BALANCE_NUM'] = int(total - used)
+            result['BALANCE'] = result['BALANCE_NUM']
+    exp_raw = usage.get('endDate') or usage.get('expire_at') or usage.get('expires_at')
+    if exp_raw is not None:
+        if isinstance(exp_raw, (int, float)) or (isinstance(exp_raw, str) and str(exp_raw).isdigit()):
+            from datetime import datetime
+            result['EXPIRES'] = datetime.utcfromtimestamp(int(exp_raw) / 1000).strftime('%Y-%m-%d')
+        else:
+            result['EXPIRES'] = str(exp_raw)
+    return result
+
+def _get_json(url: str, key: str):
+    req = urllib.request.Request(url, headers=_factory_headers(key))
+    with urllib.request.urlopen(req, timeout=API_TIMEOUT) as resp:
+        return json.loads(resp.read().decode('utf-8'))
 
 def fetch_usage(key: str) -> dict:
-    """获取单个 key 的用量信息，带重试机制"""
+    """获取单个 key 的用量：优先 Factory 滚动限额，否则回退到旧 token 额度。"""
     import time
-    result = {'BALANCE': 0, 'BALANCE_NUM': 0, 'TOTAL': 0, 'USED': 0, 'EXPIRES': '?', 'RAW': ''}
+    result = _empty_usage()
     last_error = None
-    
+
     for attempt in range(API_RETRIES):
         try:
-            req = urllib.request.Request(API_URL, headers={
-                'Authorization': f'Bearer {key}',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            })
-            with urllib.request.urlopen(req, timeout=API_TIMEOUT) as resp:
-                data = json.loads(resp.read().decode('utf-8'))
-            usage = data.get('usage')
-            if not usage:
-                result['RAW'] = 'no_usage'
+            data = _get_json(LIMITS_URL, key)
+            if data.get('usesTokenRateLimitsBilling') and data.get('limits') is not None:
+                return parse_rate_limits(data)
+            break
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                break
+            if 400 <= e.code < 500:
+                result['RAW'] = f'http_{e.code}'
+                result['EXPIRES'] = 'Invalid key'
                 return result
-            section = usage.get('standard') or usage.get('premium') or usage.get('total') or usage.get('main')
-            if section:
-                total = section.get('totalAllowance') or section.get('basicAllowance') or section.get('allowance')
-                used = section.get('orgTotalTokensUsed') or section.get('used') or section.get('tokensUsed') or 0
-                used += section.get('orgOverageUsed') or 0
-                if total is not None:
-                    result['TOTAL'] = int(total)
-                    result['USED'] = int(used)
-                    result['BALANCE_NUM'] = int(total - used)
-                    result['BALANCE'] = result['BALANCE_NUM']
-            exp_raw = usage.get('endDate') or usage.get('expire_at') or usage.get('expires_at')
-            if exp_raw is not None:
-                if isinstance(exp_raw, (int, float)) or (isinstance(exp_raw, str) and exp_raw.isdigit()):
-                    from datetime import datetime
-                    result['EXPIRES'] = datetime.utcfromtimestamp(int(exp_raw) / 1000).strftime('%Y-%m-%d')
-                else:
-                    result['EXPIRES'] = str(exp_raw)
-            return result
+            last_error = e
+            if attempt < API_RETRIES - 1:
+                time.sleep(0.5)
+                continue
+            break
+        except Exception as e:
+            last_error = e
+            if attempt < API_RETRIES - 1:
+                time.sleep(0.5)
+                continue
+            break
+
+    for attempt in range(API_RETRIES):
+        try:
+            data = _get_json(USAGE_URL, key)
+            return parse_token_usage(data)
         except urllib.error.HTTPError as e:
             result['RAW'] = f'http_{e.code}'
             result['EXPIRES'] = 'Invalid key'
@@ -167,7 +311,7 @@ def fetch_usage(key: str) -> dict:
             if attempt < API_RETRIES - 1:
                 time.sleep(0.5)
                 continue
-    
+
     result['RAW'] = 'http_error'
     result['EXPIRES'] = 'Invalid key'
     return result
@@ -186,11 +330,16 @@ def write_cache(keys_file: str, cache_file: str, keys: list, usages: list):
     lines = [str(now), keys_hash]
     for i, u in enumerate(usages):
         info = '\n'.join([
+            f"MODE={u.get('MODE', '')}",
+            f"DISPLAY={u.get('DISPLAY', '')}",
             f"BALANCE={u.get('BALANCE', 0)}",
             f"BALANCE_NUM={u.get('BALANCE_NUM', 0)}",
             f"TOTAL={u.get('TOTAL', 0)}",
             f"USED={u.get('USED', 0)}",
             f"EXPIRES={u.get('EXPIRES', '?')}",
+            f"EXTRA_CENTS={u.get('EXTRA_CENTS', 0)}",
+            f"CORE_USED={u.get('CORE_USED', 0)}",
+            f"OVERAGE_PREF={u.get('OVERAGE_PREF', '')}",
             f"RAW={u.get('RAW', '')}"
         ])
         b64 = base64.b64encode(info.encode('utf-8')).decode('ascii')

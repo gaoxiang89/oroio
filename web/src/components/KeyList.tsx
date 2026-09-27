@@ -492,9 +492,15 @@ export default function KeyList() {
           <div className="px-3 py-1.5 border border-border bg-card flex items-center gap-2">
             <span className="text-[10px] text-muted-foreground uppercase tracking-widest">Usage</span>
             <span className="text-sm font-bold font-mono text-foreground">
-              {formatNumber(keys.reduce((acc, k) => acc + (k.usage?.used || 0), 0))}
-              <span className="text-muted-foreground mx-0.5 text-xs">/</span>
-              <span className="text-muted-foreground">{formatNumber(keys.reduce((acc, k) => acc + (k.usage?.total || 0), 0))}</span>
+              {keys.some(k => k.usage?.mode === 'rate') ? (
+                keys.find(k => k.isCurrent)?.usage?.display || 'rate limits'
+              ) : (
+                <>
+                  {formatNumber(keys.reduce((acc, k) => acc + (k.usage?.used || 0), 0))}
+                  <span className="text-muted-foreground mx-0.5 text-xs">/</span>
+                  <span className="text-muted-foreground">{formatNumber(keys.reduce((acc, k) => acc + (k.usage?.total || 0), 0))}</span>
+                </>
+              )}
             </span>
           </div>
         </div>
@@ -623,7 +629,9 @@ export default function KeyList() {
                     {info.usage?.total ? `${percent}%` : '-'}
                   </TableCell>
                   <TableCell className="py-2 text-sm text-muted-foreground font-mono text-right whitespace-nowrap">
-                    {info.usage?.total ? (
+                    {info.usage?.display ? (
+                      <span>{info.usage.display}</span>
+                    ) : info.usage?.total ? (
                       <span>
                         {formatNumber(info.usage.used || 0)}
                         <span className="text-muted-foreground/50 mx-0.5">/</span>

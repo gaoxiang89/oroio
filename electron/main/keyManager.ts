@@ -9,7 +9,8 @@ const CURRENT_FILE = path.join(OROIO_DIR, 'current');
 const CACHE_FILE = path.join(OROIO_DIR, 'list_cache.b64');
 
 const SALT = 'oroio';
-const API_URL = 'https://app.factory.ai/api/organization/members/chat-usage';
+const LIMITS_URL = 'https://app.factory.ai/api/billing/limits';
+const USAGE_URL = 'https://app.factory.ai/api/organization/members/chat-usage';
 
 export interface KeyUsage {
   balance: number | null;
@@ -17,6 +18,11 @@ export interface KeyUsage {
   used: number | null;
   expires: string;
   raw: string;
+  mode?: string;
+  display?: string;
+  extraCents?: number;
+  coreUsed?: number;
+  overagePref?: string;
 }
 
 export interface KeyInfo {
@@ -124,6 +130,11 @@ function parseUsageInfo(text: string): KeyUsage {
     used: data['USED'] ? parseFloat(data['USED']) : null,
     expires: data['EXPIRES'] || '?',
     raw: data['RAW'] || '',
+    mode: data['MODE'] || '',
+    display: data['DISPLAY'] || '',
+    extraCents: data['EXTRA_CENTS'] ? parseFloat(data['EXTRA_CENTS']) : 0,
+    coreUsed: data['CORE_USED'] ? parseFloat(data['CORE_USED']) : 0,
+    overagePref: data['OVERAGE_PREF'] || '',
   };
 }
 
@@ -186,77 +197,202 @@ export async function getCurrentKey(): Promise<KeyInfo | null> {
 const API_TIMEOUT = 8000;
 const API_RETRIES = 3;
 
-async function fetchUsage(key: string): Promise<KeyUsage> {
-  const result: KeyUsage = {
+const WINDOW_KEYS: Array<[string, string]> = [
+  ['fiveHour', '5h'],
+  ['weekly', '7d'],
+  ['monthly', '30d'],
+];
+
+function emptyUsage(): KeyUsage {
+  return {
     balance: 0,
     total: 0,
     used: 0,
     expires: '?',
     raw: '',
+    mode: '',
+    display: '',
+    extraCents: 0,
+    coreUsed: 0,
+    overagePref: '',
   };
+}
+
+function fmtPct(p: number): string {
+  const r = Math.round(p);
+  return Math.abs(p - r) < 0.05 ? String(r) : p.toFixed(1);
+}
+
+function parseIso(end: unknown): Date | null {
+  if (!end) return null;
+  const dt = new Date(String(end));
+  return Number.isNaN(dt.getTime()) ? null : dt;
+}
+
+function windowPct(w: any, now: Date): { pct: number; rem: number | null; end: any } {
+  if (!w || typeof w !== 'object') return { pct: 0, rem: null, end: null };
+  let pct = Number(w.usedPercent ?? 0);
+  if (!Number.isFinite(pct)) pct = 0;
+  const rem = w.secondsRemaining == null ? null : Number(w.secondsRemaining);
+  if (rem != null && Number.isFinite(rem) && rem <= 0) {
+    return { pct: 0, rem, end: w.windowEnd };
+  }
+  if (rem == null) {
+    const end = parseIso(w.windowEnd);
+    if (end && end.getTime() <= now.getTime()) {
+      return { pct: 0, rem, end: w.windowEnd };
+    }
+  }
+  return { pct: Math.min(100, Math.max(0, pct)), rem, end: w.windowEnd };
+}
+
+function poolWindows(pool: any, now: Date) {
+  return WINDOW_KEYS.map(([key, label]) => {
+    const parsed = windowPct(pool?.[key], now);
+    return { label, ...parsed };
+  });
+}
+
+function bottleneck<T extends { pct: number; rem: number | null }>(windows: T[]): T {
+  return [...windows].sort((a, b) => {
+    if (b.pct !== a.pct) return b.pct - a.pct;
+    const ar = a.rem ?? Number.POSITIVE_INFINITY;
+    const br = b.rem ?? Number.POSITIVE_INFINITY;
+    return ar - br;
+  })[0];
+}
+
+function parseRateLimits(data: any): KeyUsage {
+  const now = new Date();
+  const limits = data?.limits || {};
+  const std = poolWindows(limits.standard, now);
+  const core = poolWindows(limits.core, now);
+  const bot = bottleneck(std);
+  const used = Math.round(bot.pct);
+  let expires = '?';
+  const end = parseIso(bot.end);
+  if (end) {
+    expires = end.toISOString().split('T')[0];
+  } else if (bot.rem != null && Number.isFinite(bot.rem)) {
+    expires = new Date(now.getTime() + bot.rem * 1000).toISOString().split('T')[0];
+  }
+  return {
+    mode: 'rate',
+    display: std.map(w => `${w.label} ${fmtPct(w.pct)}%`).join(' '),
+    total: 100,
+    used,
+    balance: 100 - used,
+    expires,
+    raw: '',
+    extraCents: Number(data?.extraUsageBalanceCents || 0),
+    coreUsed: Math.round(bottleneck(core).pct),
+    overagePref: data?.overagePreference || '',
+  };
+}
+
+function parseTokenUsage(data: any): KeyUsage {
+  const result = emptyUsage();
+  result.mode = 'tokens';
+  const usage = data?.usage;
+  if (!usage) {
+    result.raw = 'no_usage';
+    return result;
+  }
+  const section = usage.standard || usage.premium || usage.total || usage.main;
+  if (section) {
+    const total = section.totalAllowance ?? section.basicAllowance ?? section.allowance;
+    const used = section.orgTotalTokensUsed ?? section.used ?? section.tokensUsed ?? 0;
+    if (total != null) {
+      result.total = total;
+      result.used = used;
+      result.balance = total - used;
+    }
+  }
+  const expRaw = usage.endDate ?? usage.expire_at ?? usage.expires_at;
+  if (expRaw != null) {
+    if (typeof expRaw === 'number' || /^\d+$/.test(String(expRaw))) {
+      result.expires = new Date(Number(expRaw)).toISOString().split('T')[0];
+    } else {
+      result.expires = String(expRaw);
+    }
+  }
+  return result;
+}
+
+async function fetchJson(url: string, key: string, signal: AbortSignal): Promise<{ ok: boolean; status: number; data?: any }> {
+  const response = await fetch(url, {
+    headers: {
+      'Authorization': `Bearer ${key}`,
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+      'Accept': 'application/json',
+    },
+    signal,
+  });
+  if (!response.ok) {
+    return { ok: false, status: response.status };
+  }
+  return { ok: true, status: response.status, data: await response.json() };
+}
+
+async function fetchUsage(key: string): Promise<KeyUsage> {
+  const result = emptyUsage();
 
   for (let attempt = 1; attempt <= API_RETRIES; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), API_TIMEOUT);
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), API_TIMEOUT);
-
-      const response = await fetch(API_URL, {
-        headers: {
-          'Authorization': `Bearer ${key}`,
-          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-        },
-        signal: controller.signal,
-      });
-
+      const limits = await fetchJson(LIMITS_URL, key, controller.signal);
       clearTimeout(timeout);
-
-      if (!response.ok) {
-        if (response.status >= 400 && response.status < 500) {
-          result.raw = `http_${response.status}`;
-          result.expires = 'Invalid key';
-          return result;
+      if (limits.ok) {
+        if (limits.data?.usesTokenRateLimitsBilling && limits.data?.limits != null) {
+          return parseRateLimits(limits.data);
         }
-        if (attempt < API_RETRIES) {
-          await new Promise(r => setTimeout(r, 500));
-          continue;
-        }
-        result.raw = `http_${response.status}`;
-        result.expires = 'Error';
+        break;
+      }
+      if (limits.status === 404) break;
+      if (limits.status >= 400 && limits.status < 500) {
+        result.raw = `http_${limits.status}`;
+        result.expires = 'Invalid key';
         return result;
       }
+      if (attempt < API_RETRIES) {
+        await new Promise(r => setTimeout(r, 500));
+        continue;
+      }
+      break;
+    } catch {
+      clearTimeout(timeout);
+      if (attempt < API_RETRIES) {
+        await new Promise(r => setTimeout(r, 500));
+        continue;
+      }
+      break;
+    }
+  }
 
-      const data = await response.json() as { usage?: any };
-      const usage = data.usage;
-
-      if (!usage) {
-        result.raw = 'no_usage';
+  for (let attempt = 1; attempt <= API_RETRIES; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), API_TIMEOUT);
+    try {
+      const usage = await fetchJson(USAGE_URL, key, controller.signal);
+      clearTimeout(timeout);
+      if (usage.ok) {
+        return parseTokenUsage(usage.data);
+      }
+      if (usage.status >= 400 && usage.status < 500) {
+        result.raw = `http_${usage.status}`;
+        result.expires = 'Invalid key';
         return result;
       }
-
-      const section = usage.standard || usage.premium || usage.total || usage.main;
-      if (section) {
-        const total = section.totalAllowance ?? section.basicAllowance ?? section.allowance;
-        let used = section.orgTotalTokensUsed ?? section.used ?? section.tokensUsed ?? 0;
-        used += section.orgOverageUsed ?? 0;
-
-        if (total != null) {
-          result.total = total;
-          result.used = used;
-          result.balance = total - used;
-        }
+      if (attempt < API_RETRIES) {
+        await new Promise(r => setTimeout(r, 500));
+        continue;
       }
-
-      const expRaw = usage.endDate ?? usage.expire_at ?? usage.expires_at;
-      if (expRaw != null) {
-        if (typeof expRaw === 'number' || /^\d+$/.test(String(expRaw))) {
-          const ts = Number(expRaw) / 1000;
-          result.expires = new Date(ts * 1000).toISOString().split('T')[0];
-        } else {
-          result.expires = String(expRaw);
-        }
-      }
+      result.raw = `http_${usage.status}`;
+      result.expires = 'Error';
       return result;
-    } catch (error: any) {
+    } catch {
+      clearTimeout(timeout);
       if (attempt < API_RETRIES) {
         await new Promise(r => setTimeout(r, 500));
         continue;
@@ -278,11 +414,16 @@ async function writeCache(keys: string[], usages: KeyUsage[]): Promise<void> {
   for (let i = 0; i < usages.length; i++) {
     const u = usages[i];
     const info = [
+      `MODE=${u.mode ?? ''}`,
+      `DISPLAY=${u.display ?? ''}`,
       `BALANCE=${u.balance ?? 0}`,
       `BALANCE_NUM=${u.balance ?? 0}`,
       `TOTAL=${u.total ?? 0}`,
       `USED=${u.used ?? 0}`,
       `EXPIRES=${u.expires}`,
+      `EXTRA_CENTS=${u.extraCents ?? 0}`,
+      `CORE_USED=${u.coreUsed ?? 0}`,
+      `OVERAGE_PREF=${u.overagePref ?? ''}`,
       `RAW=${u.raw}`,
     ].join('\n');
     const b64 = Buffer.from(info).toString('base64');

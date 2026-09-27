@@ -41,6 +41,8 @@ function getPercent(info: KeyInfo): number {
 
 function formatUsage(info: KeyInfo): string {
   if (!isValidKey(info)) return '';
+  if (info.usage?.display) return info.usage.display;
+  if (info.usage?.mode === 'rate') return `${Math.round(info.usage.used ?? 0)}%`;
   const used = info.usage!.used ?? 0;
   const total = info.usage!.total!;
   const formatNum = (n: number) => n >= 1000000 ? `${Math.round(n / 1000000)}M` : `${Math.round(n / 1000)}K`;
