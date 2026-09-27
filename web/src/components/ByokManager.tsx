@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, Plus, Trash2, Cpu, Copy, Check, Pencil, ChevronRight, ChevronDown, Eye, EyeOff, Brain, AlertCircle, X, KeyRound } from 'lucide-react';
+import { RefreshCw, Plus, Trash2, Cpu, Copy, Check, Pencil, ChevronRight, ChevronDown, Eye, EyeOff, Brain, AlertCircle, X, KeyRound, Globe2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -25,7 +25,9 @@ import {
 } from "@/components/ui/alert-dialog";
 import {
   applyByok,
+  applyOpenAICompatible,
   discoverByok,
+  discoverOpenAICompatible,
   listByokProviders,
   listCustomModels,
   refreshByokProvider,
@@ -210,8 +212,10 @@ export default function ByokManager() {
   const [form, setForm] = useState<FormState>(DEFAULT_FORM);
   const [quickDialogOpen, setQuickDialogOpen] = useState(false);
   const [quickProvider, setQuickProvider] = useState<ByokProvider | null>(null);
+  const [quickMode, setQuickMode] = useState<'official' | 'openai-compatible'>('official');
   const [quickStage, setQuickStage] = useState<'key' | 'models'>('key');
   const [quickKey, setQuickKey] = useState('');
+  const [customBaseUrl, setCustomBaseUrl] = useState('');
   const [quickDiscovery, setQuickDiscovery] = useState<ByokDiscovery | null>(null);
   const [selectedModelIds, setSelectedModelIds] = useState<Set<string>>(new Set());
   const [quickBusy, setQuickBusy] = useState(false);
@@ -265,9 +269,21 @@ export default function ByokManager() {
   };
 
   const openQuickSetup = (provider: ByokProvider) => {
+    setQuickMode('official');
     setQuickProvider(provider);
     setQuickStage('key');
     setQuickKey('');
+    setQuickDiscovery(null);
+    setSelectedModelIds(new Set());
+    setQuickDialogOpen(true);
+  };
+
+  const openOpenAICompatibleSetup = () => {
+    setQuickMode('openai-compatible');
+    setQuickProvider(null);
+    setQuickStage('key');
+    setQuickKey('');
+    setCustomBaseUrl('');
     setQuickDiscovery(null);
     setSelectedModelIds(new Set());
     setQuickDialogOpen(true);
@@ -281,13 +297,24 @@ export default function ByokManager() {
   };
 
   const handleQuickDiscover = async () => {
-    if (!quickProvider || !quickKey.trim()) {
+    if ((quickMode === 'official' && !quickProvider) || !quickKey.trim()) {
       showError('Enter an API key');
+      return;
+    }
+    if (quickMode === 'openai-compatible' && !customBaseUrl.trim()) {
+      showError('Enter a Base URL');
       return;
     }
     try {
       setQuickBusy(true);
-      const result = await discoverByok(quickProvider.id, quickKey);
+      let result: ByokDiscovery;
+      if (quickMode === 'openai-compatible') {
+        const customResult = await discoverOpenAICompatible(customBaseUrl, quickKey);
+        setCustomBaseUrl(customResult.baseUrl);
+        result = customResult;
+      } else {
+        result = await discoverByok(quickProvider!.id, quickKey);
+      }
       setQuickDiscovery(result);
       setSelectedModelIds(new Set(result.models.filter(model => model.selected).map(model => model.id)));
       setQuickStage('models');
@@ -311,6 +338,7 @@ export default function ByokManager() {
         managedModelIds: result.managedModelIds,
       };
       if (!discovered.models.length) throw new Error('The provider returned no usable models');
+      setQuickMode('official');
       setQuickProvider(provider);
       setQuickKey('');
       setQuickDiscovery(discovered);
@@ -326,16 +354,20 @@ export default function ByokManager() {
   };
 
   const handleQuickApply = async () => {
-    if (!quickProvider || selectedModelIds.size === 0) {
+    if ((quickMode === 'official' && !quickProvider) || selectedModelIds.size === 0) {
       showError('Select at least one model');
       return;
     }
     try {
       setQuickBusy(true);
-      await applyByok(quickProvider.id, quickKey, [...selectedModelIds]);
+      if (quickMode === 'openai-compatible') {
+        await applyOpenAICompatible(customBaseUrl, quickKey, [...selectedModelIds]);
+      } else {
+        await applyByok(quickProvider!.id, quickKey, [...selectedModelIds]);
+      }
       closeQuickDialog();
       await loadModels();
-      toast.success(`${quickProvider.name} configured`);
+      toast.success(`${quickMode === 'openai-compatible' ? 'OpenAI-compatible endpoint' : quickProvider!.name} configured`);
     } catch (err) {
       showError(err instanceof Error ? err.message : 'Failed to apply provider');
     } finally {
@@ -496,6 +528,25 @@ export default function ByokManager() {
         </div>
       </section>
 
+      <section className="space-y-3">
+        <div>
+          <h2 className="text-sm font-semibold uppercase tracking-wider">OpenAI-compatible endpoint</h2>
+          <p className="text-xs text-muted-foreground mt-1">Fetch models from any OpenAI-compatible Base URL and add the selected models to Droid.</p>
+        </div>
+        <div className="border border-border bg-card p-4 flex flex-col gap-3 md:flex-row md:items-center">
+          <div className="h-9 w-9 border border-border flex items-center justify-center shrink-0">
+            <Globe2 className="h-4 w-4 text-primary" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="text-sm font-semibold">OpenAI-compatible</h3>
+            <p className="text-xs text-muted-foreground mt-1">Enter a Base URL and API Key, then choose from the models returned by /models.</p>
+          </div>
+          <Button size="sm" className="h-8 text-xs md:w-32" onClick={openOpenAICompatibleSetup} disabled={quickBusy}>
+            Fetch models
+          </Button>
+        </div>
+      </section>
+
       <div className="border-t border-border pt-5">
         <h2 className="text-sm font-semibold uppercase tracking-wider">Advanced custom models</h2>
         <p className="text-xs text-muted-foreground mt-1">Manually configure any Droid-compatible endpoint.</p>
@@ -631,14 +682,16 @@ export default function ByokManager() {
         )}
       </div>
 
-      {/* Official provider setup */}
+      {/* Guided provider setup */}
       <Dialog open={quickDialogOpen} onOpenChange={(open) => open ? setQuickDialogOpen(true) : closeQuickDialog()}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{quickProvider?.name}</DialogTitle>
+            <DialogTitle>{quickMode === 'openai-compatible' ? 'OpenAI-compatible endpoint' : quickProvider?.name}</DialogTitle>
             <DialogDescription>
               {quickStage === 'key'
-                ? 'Your key is validated directly against the provider and stored only in your local Droid settings.'
+                ? quickMode === 'openai-compatible'
+                  ? 'The local backend fetches Base URL + /models. The key is stored only in your local Droid settings.'
+                  : 'Your key is validated directly against the provider and stored only in your local Droid settings.'
                 : 'Select the models to manage. Unavailable models stay selected until you explicitly remove them.'}
             </DialogDescription>
           </DialogHeader>
@@ -650,10 +703,24 @@ export default function ByokManager() {
                   Continuing replaces the API key for every model managed by this provider.
                 </div>
               )}
+              {quickMode === 'openai-compatible' && (
+                <div className="space-y-2">
+                  <Label htmlFor="openai_base_url">Base URL</Label>
+                  <Input
+                    id="openai_base_url"
+                    type="url"
+                    spellCheck={false}
+                    placeholder="https://api.example.com/v1"
+                    value={customBaseUrl}
+                    onChange={event => setCustomBaseUrl(event.target.value)}
+                  />
+                  <p className="text-[11px] text-muted-foreground">Both HTTPS endpoints and local HTTP endpoints are supported. Redirects are rejected.</p>
+                </div>
+              )}
               <div className="space-y-2">
-                <Label htmlFor="official_api_key">API Key</Label>
+                <Label htmlFor="guided_api_key">API Key</Label>
                 <Input
-                  id="official_api_key"
+                  id="guided_api_key"
                   type="password"
                   autoComplete="off"
                   placeholder="Paste provider API key"
@@ -703,7 +770,7 @@ export default function ByokManager() {
           <DialogFooter>
             <Button variant="outline" onClick={closeQuickDialog} disabled={quickBusy}>Cancel</Button>
             {quickStage === 'key' ? (
-              <Button onClick={handleQuickDiscover} disabled={quickBusy || !quickKey.trim()}>
+              <Button onClick={handleQuickDiscover} disabled={quickBusy || !quickKey.trim() || (quickMode === 'openai-compatible' && !customBaseUrl.trim())}>
                 {quickBusy && <RefreshCw className="h-3.5 w-3.5 mr-2 animate-spin" />}
                 Validate & fetch models
               </Button>

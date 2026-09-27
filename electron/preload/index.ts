@@ -140,6 +140,8 @@ export interface OroioAPI {
   applyByok: (provider: string, apiKey: string, modelIds: string[]) => Promise<ByokApplyResult>;
   refreshByokProvider: (provider: string) => Promise<ByokApplyResult>;
   removeByokProvider: (provider: string) => Promise<{ success: true; provider: string; removedModelIds: string[] }>;
+  discoverOpenAICompatible: (baseUrl: string, apiKey: string) => Promise<ByokDiscovery & { baseUrl: string }>;
+  applyOpenAICompatible: (baseUrl: string, apiKey: string, modelIds: string[]) => Promise<ByokApplyResult & { baseUrl: string }>;
   // Utilities
   openPath: (path: string) => Promise<void>;
 }
@@ -202,6 +204,8 @@ const api: OroioAPI = {
   applyByok: (provider: string, apiKey: string, modelIds: string[]) => ipcRenderer.invoke('byok:apply', provider, apiKey, modelIds),
   refreshByokProvider: (provider: string) => ipcRenderer.invoke('byok:refresh-provider', provider),
   removeByokProvider: (provider: string) => ipcRenderer.invoke('byok:remove-provider', provider),
+  discoverOpenAICompatible: (baseUrl: string, apiKey: string) => ipcRenderer.invoke('byok:openai-compatible:discover', baseUrl, apiKey),
+  applyOpenAICompatible: (baseUrl: string, apiKey: string, modelIds: string[]) => ipcRenderer.invoke('byok:openai-compatible:apply', baseUrl, apiKey, modelIds),
   // Utilities
   openPath: (p: string) => ipcRenderer.invoke('util:openPath', p),
 };

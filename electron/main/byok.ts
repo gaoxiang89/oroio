@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 
 const FACTORY_DIR = path.join(os.homedir(), '.factory');
 const OROIO_DIR = path.join(os.homedir(), '.oroio');
@@ -14,14 +14,18 @@ const REQUEST_TIMEOUT_MS = 12_000;
 type Source = 'settings' | 'legacy';
 type JsonObject = Record<string, unknown>;
 
-export interface TrustedProvider {
-  id: 'glm' | 'deepseek' | 'kimi';
+interface RuntimeProvider {
+  id: string;
   name: string;
-  description: string;
   modelsUrl: string;
   baseUrl: string;
   droidProvider: 'anthropic' | 'generic-chat-completion-api';
   authMode?: 'bearer';
+}
+
+export interface TrustedProvider extends RuntimeProvider {
+  id: 'glm' | 'deepseek' | 'kimi';
+  description: string;
 }
 
 export interface ProviderStatus extends TrustedProvider {
@@ -204,7 +208,7 @@ function managedIds(state: ManagedProviderState): string[] {
 }
 
 function findManagedEntries(
-  provider: TrustedProvider,
+  provider: RuntimeProvider,
   providerState: ManagedProviderState,
   settings: JsonObject,
   legacy: JsonObject,
@@ -307,8 +311,12 @@ async function readLimited(response: Response): Promise<Uint8Array> {
   return Buffer.concat(chunks, size);
 }
 
-async function downloadModels(provider: TrustedProvider, apiKey: string): Promise<DiscoveredModel[]> {
+async function downloadModels(provider: RuntimeProvider, apiKey: string, allowHttp = false): Promise<DiscoveredModel[]> {
   if (!apiKey.trim()) throw new ByokError('invalid_key', 'Enter an API key.');
+  const modelsUrl = new URL(provider.modelsUrl);
+  if (!['https:', ...(allowHttp ? ['http:'] : [])].includes(modelsUrl.protocol)) {
+    throw new ByokError('invalid_provider', 'The provider endpoint is not trusted.');
+  }
   let response: Response;
   try {
     response = await fetch(provider.modelsUrl, {
@@ -444,8 +452,9 @@ function mergeDiscovery(
   settings: JsonObject,
   legacy: JsonObject,
   state: StateFile,
+  providerOverride?: RuntimeProvider,
 ): DiscoveryResult {
-  const provider = providerFor(providerId);
+  const provider = providerOverride || providerFor(providerId);
   const saved = state.providers[providerId] || {};
   const managedModelIds = managedIds(saved);
   const found = findManagedEntries(provider, saved, settings, legacy);
@@ -489,7 +498,7 @@ export async function discoverProvider(providerId: string, apiKey: string): Prom
 }
 
 function makeEntry(
-  provider: TrustedProvider,
+  provider: RuntimeProvider,
   model: DiscoveredModel,
   apiKey: string,
   source: Source,
@@ -530,8 +539,9 @@ async function syncProvider(
   apiKey: string,
   selectedModelIds: string[],
   discoveredModels: DiscoveredModel[],
+  providerOverride?: RuntimeProvider,
 ): Promise<ApplyResult> {
-  const provider = providerFor(providerId);
+  const provider = providerOverride || providerFor(providerId);
   const [settings, legacy, state, legacyExists] = await Promise.all([
     readJson(SETTINGS_PATH, {}), readJson(LEGACY_PATH, {}), readState(), exists(LEGACY_PATH),
   ]);
@@ -588,6 +598,65 @@ export async function applyProvider(providerId: string, apiKey: string, modelIds
   const effectiveKey = apiKey.trim() ? apiKey : await savedKey(normalizedId);
   const models = await downloadModels(provider, effectiveKey);
   return syncProvider(normalizedId, effectiveKey, modelIds, models);
+}
+
+export function normalizeOpenAIBaseUrl(baseUrl: string): string {
+  if (!baseUrl.trim()) throw new ByokError('invalid_base_url', 'Enter an OpenAI-compatible Base URL.');
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl.trim());
+  } catch {
+    throw new ByokError('invalid_base_url', 'Enter a valid OpenAI-compatible Base URL.');
+  }
+  if (
+    !['http:', 'https:'].includes(parsed.protocol)
+    || parsed.username
+    || parsed.password
+    || parsed.search
+    || parsed.hash
+  ) {
+    throw new ByokError(
+      'invalid_base_url',
+      'Base URL must be an HTTP(S) URL without credentials, query parameters, or fragments.',
+    );
+  }
+  let pathname = parsed.pathname.replace(/\/+$/, '');
+  if (pathname.endsWith('/models')) pathname = pathname.slice(0, -7).replace(/\/+$/, '');
+  parsed.pathname = pathname;
+  parsed.search = '';
+  parsed.hash = '';
+  return parsed.toString().replace(/\/$/, '');
+}
+
+function openAICompatibleProvider(baseUrl: string): RuntimeProvider {
+  const normalized = normalizeOpenAIBaseUrl(baseUrl);
+  const suffix = createHash('sha256').update(normalized).digest('hex').slice(0, 16);
+  return {
+    id: `openai-compatible:${suffix}`,
+    name: 'OpenAI-compatible',
+    modelsUrl: `${normalized}/models`,
+    baseUrl: normalized,
+    droidProvider: 'generic-chat-completion-api',
+  };
+}
+
+export async function discoverOpenAICompatible(baseUrl: string, apiKey: string): Promise<DiscoveryResult & { baseUrl: string }> {
+  const provider = openAICompatibleProvider(baseUrl);
+  const models = await downloadModels(provider, apiKey, true);
+  const [settings, legacy, state] = await Promise.all([readJson(SETTINGS_PATH, {}), readJson(LEGACY_PATH, {}), readState()]);
+  return {
+    ...mergeDiscovery(provider.id, models, settings, legacy, state, provider),
+    baseUrl: provider.baseUrl,
+  };
+}
+
+export async function applyOpenAICompatible(baseUrl: string, apiKey: string, modelIds: string[]): Promise<ApplyResult & { baseUrl: string }> {
+  const provider = openAICompatibleProvider(baseUrl);
+  const models = await downloadModels(provider, apiKey, true);
+  return {
+    ...await syncProvider(provider.id, apiKey, modelIds, models, provider),
+    baseUrl: provider.baseUrl,
+  };
 }
 
 async function savedKey(providerId: string): Promise<string> {

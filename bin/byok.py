@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import hashlib
 import json
 import os
 import socket
@@ -16,7 +17,7 @@ import sys
 import tempfile
 import urllib.error
 import urllib.request
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -235,13 +236,17 @@ def _download_models(
     provider: dict[str, Any],
     api_key: str,
     opener: Callable[..., Any] | None = None,
+    trusted_only: bool = True,
 ) -> list[dict[str, Any]]:
     if not isinstance(api_key, str) or not api_key.strip():
         raise ByokError("invalid_key", "Enter an API key.")
     parsed_url = urlsplit(provider["modelsUrl"])
-    if parsed_url.scheme != "https" or parsed_url.hostname not in {
-        "open.bigmodel.cn", "api.deepseek.com", "api.kimi.com"
-    }:
+    trusted_hosts = {"open.bigmodel.cn", "api.deepseek.com", "api.kimi.com"}
+    if (
+        parsed_url.scheme not in ({"https"} if trusted_only else {"http", "https"})
+        or not parsed_url.hostname
+        or (trusted_only and parsed_url.hostname not in trusted_hosts)
+    ):
         raise ByokError("invalid_provider", "The provider endpoint is not trusted.")
     request = urllib.request.Request(
         provider["modelsUrl"],
@@ -414,8 +419,9 @@ def _merge_discovery(
     settings: dict[str, Any],
     legacy: dict[str, Any],
     metadata: dict[str, Any],
+    provider_override: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    provider = _provider(provider_id)
+    provider = provider_override or _provider(provider_id)
     saved = _provider_state(metadata, provider_id)
     managed = _managed_ids(saved)
     found = _find_managed_entries(provider, saved, settings, legacy)
@@ -533,8 +539,9 @@ def _sync(
     discovered_models: list[dict[str, Any]],
     factory_dir: str | os.PathLike[str] | None,
     oroio_dir: str | os.PathLike[str] | None,
+    provider_override: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    provider = _provider(provider_id)
+    provider = provider_override or _provider(provider_id)
     settings_path, legacy_path, state_path = _paths(factory_dir, oroio_dir)
     settings = _read_json(settings_path, {})
     legacy = _read_json(legacy_path, {})
@@ -619,6 +626,98 @@ def _sync(
         "managedModelIds": selected,
         "unavailableModelIds": unavailable,
     }
+
+
+def normalize_openai_base_url(base_url: str) -> str:
+    """Validate and normalize an OpenAI-compatible runtime base URL."""
+    if not isinstance(base_url, str) or not base_url.strip():
+        raise ByokError("invalid_base_url", "Enter an OpenAI-compatible Base URL.")
+    try:
+        parsed = urlsplit(base_url.strip())
+    except ValueError:
+        raise ByokError("invalid_base_url", "Enter a valid OpenAI-compatible Base URL.")
+    if (
+        parsed.scheme.lower() not in ("http", "https")
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ByokError(
+            "invalid_base_url",
+            "Base URL must be an HTTP(S) URL without credentials, query parameters, or fragments.",
+        )
+    host = parsed.hostname.lower().encode("idna").decode("ascii")
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    try:
+        port = parsed.port
+    except ValueError:
+        raise ByokError("invalid_base_url", "Base URL contains an invalid port.")
+    default_port = (parsed.scheme.lower() == "https" and port == 443) or (parsed.scheme.lower() == "http" and port == 80)
+    netloc = f"{host}:{port}" if port is not None and not default_port else host
+    path = parsed.path.rstrip("/")
+    if path.endswith("/models"):
+        path = path[:-7].rstrip("/")
+    return urlunsplit((parsed.scheme.lower(), netloc, path, "", ""))
+
+
+def _openai_compatible_provider(base_url: str) -> tuple[str, dict[str, Any]]:
+    normalized = normalize_openai_base_url(base_url)
+    endpoint_id = "openai-compatible:" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+    return endpoint_id, {
+        "id": endpoint_id,
+        "name": "OpenAI-compatible",
+        "modelsUrl": normalized + "/models",
+        "baseUrl": normalized,
+        "droidProvider": "generic-chat-completion-api",
+    }
+
+
+def discover_openai_compatible(
+    base_url: str,
+    api_key: str,
+    factory_dir: str | os.PathLike[str] | None = None,
+    oroio_dir: str | os.PathLike[str] | None = None,
+    opener: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    endpoint_id, provider = _openai_compatible_provider(base_url)
+    models = _download_models(provider, api_key, opener=opener, trusted_only=False)
+    settings_path, legacy_path, state_path = _paths(factory_dir, oroio_dir)
+    result = _merge_discovery(
+        endpoint_id,
+        models,
+        _read_json(settings_path, {}),
+        _read_json(legacy_path, {}),
+        _state(state_path),
+        provider_override=provider,
+    )
+    result["baseUrl"] = provider["baseUrl"]
+    return result
+
+
+def apply_openai_compatible(
+    base_url: str,
+    api_key: str,
+    selected_model_ids: list[str],
+    factory_dir: str | os.PathLike[str] | None = None,
+    oroio_dir: str | os.PathLike[str] | None = None,
+    opener: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    endpoint_id, provider = _openai_compatible_provider(base_url)
+    models = _download_models(provider, api_key, opener=opener, trusted_only=False)
+    result = _sync(
+        endpoint_id,
+        api_key,
+        selected_model_ids,
+        models,
+        factory_dir,
+        oroio_dir,
+        provider_override=provider,
+    )
+    result["baseUrl"] = provider["baseUrl"]
+    return result
 
 
 def apply(

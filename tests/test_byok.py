@@ -105,6 +105,65 @@ class ByokTests(unittest.TestCase):
         self.assertEqual(timeout, byok.REQUEST_TIMEOUT)
         self.assertNotIn(secret, json.dumps(result))
 
+    def test_openai_compatible_discovers_models_from_user_base_url(self):
+        requests = []
+        result = byok.discover_openai_compatible(
+            "https://api.example.test/v1/",
+            "custom-secret",
+            self.factory,
+            self.oroio,
+            opener=opener_for({"data": [{"id": "gpt-custom"}, {"id": "claude-custom"}]}, requests),
+        )
+        request, timeout = requests[0]
+        self.assertEqual(request.full_url, "https://api.example.test/v1/models")
+        self.assertEqual(request.get_header("Authorization"), "Bearer custom-secret")
+        self.assertEqual(timeout, byok.REQUEST_TIMEOUT)
+        self.assertEqual(result["baseUrl"], "https://api.example.test/v1")
+        self.assertEqual([model["id"] for model in result["models"]], ["gpt-custom", "claude-custom"])
+        self.assertNotIn("custom-secret", json.dumps(result))
+
+    def test_openai_compatible_apply_syncs_selected_models(self):
+        payload = {"data": [{"id": "model-a"}, {"id": "model-b"}]}
+        byok.apply_openai_compatible(
+            "https://api.example.test/v1",
+            "first-key",
+            ["model-a", "model-b"],
+            self.factory,
+            self.oroio,
+            opener=opener_for(payload),
+        )
+        settings = self.read(self.factory / "settings.json")
+        self.assertEqual([row["model"] for row in settings["customModels"]], ["model-a", "model-b"])
+        self.assertTrue(all(row["baseUrl"] == "https://api.example.test/v1" for row in settings["customModels"]))
+        self.assertTrue(all(row["provider"] == "generic-chat-completion-api" for row in settings["customModels"]))
+
+        byok.apply_openai_compatible(
+            "https://api.example.test/v1/",
+            "replacement-key",
+            ["model-b"],
+            self.factory,
+            self.oroio,
+            opener=opener_for(payload),
+        )
+        settings = self.read(self.factory / "settings.json")
+        self.assertEqual([row["model"] for row in settings["customModels"]], ["model-b"])
+        self.assertEqual(settings["customModels"][0]["apiKey"], "replacement-key")
+        self.assertNotIn("replacement-key", (self.oroio / "byok.json").read_text())
+
+    def test_openai_compatible_rejects_unsafe_base_urls(self):
+        invalid = [
+            "",
+            "ftp://api.example.test/v1",
+            "https://user:password@api.example.test/v1",
+            "https://api.example.test/v1?token=secret",
+            "https://api.example.test/v1#models",
+        ]
+        for value in invalid:
+            with self.subTest(value=value), self.assertRaises(byok.ByokError) as caught:
+                byok.normalize_openai_base_url(value)
+            self.assertEqual(caught.exception.code, "invalid_base_url")
+        self.assertEqual(byok.normalize_openai_base_url("http://127.0.0.1:8317/v1/models"), "http://127.0.0.1:8317/v1")
+
     def test_http_errors_have_stable_safe_messages(self):
         for status, code in ((401, "invalid_key"), (403, "forbidden"), (429, "rate_limited"), (500, "provider_error")):
             def fail(request, timeout, status=status):

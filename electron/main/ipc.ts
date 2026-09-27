@@ -16,6 +16,8 @@ import { updateTrayMenu } from './tray';
 import { checkAndNotify } from './notifier';
 import {
   applyProvider,
+  applyOpenAICompatible,
+  discoverOpenAICompatible,
   discoverProvider,
   listCustomModels,
   listProviders,
@@ -405,6 +407,8 @@ Droid instructions here.
   ipcMain.handle('byok:apply', async (_event, provider: string, apiKey: string, modelIds: string[]) => applyProvider(provider, apiKey, modelIds));
   ipcMain.handle('byok:refresh-provider', async (_event, provider: string) => refreshProvider(provider));
   ipcMain.handle('byok:remove-provider', async (_event, provider: string) => removeProvider(provider));
+  ipcMain.handle('byok:openai-compatible:discover', async (_event, baseUrl: string, apiKey: string) => discoverOpenAICompatible(baseUrl, apiKey));
+  ipcMain.handle('byok:openai-compatible:apply', async (_event, baseUrl: string, apiKey: string, modelIds: string[]) => applyOpenAICompatible(baseUrl, apiKey, modelIds));
 
   // Utility handlers
   ipcMain.handle('util:openPath', async (_event, filePath: string): Promise<void> => {

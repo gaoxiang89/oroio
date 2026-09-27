@@ -566,6 +566,16 @@ export async function removeByokProvider(provider: string): Promise<void> {
   await byokPost('/api/byok/remove-provider', { provider });
 }
 
+export async function discoverOpenAICompatible(baseUrl: string, apiKey: string): Promise<ByokDiscovery & { baseUrl: string }> {
+  if (isElectron) return window.oroio.discoverOpenAICompatible(baseUrl, apiKey);
+  return byokPost<ByokDiscovery & { baseUrl: string }>('/api/byok/openai-compatible/discover', { baseUrl, apiKey });
+}
+
+export async function applyOpenAICompatible(baseUrl: string, apiKey: string, modelIds: string[]): Promise<ByokApplyResult & { baseUrl: string }> {
+  if (isElectron) return window.oroio.applyOpenAICompatible(baseUrl, apiKey, modelIds);
+  return byokPost<ByokApplyResult & { baseUrl: string }>('/api/byok/openai-compatible/apply', { baseUrl, apiKey, modelIds });
+}
+
 // dk CLI check (Electron only)
 export async function checkDk(): Promise<DkCheckResult | null> {
   if (!isElectron) {
@@ -663,6 +673,8 @@ declare global {
       applyByok: (provider: string, apiKey: string, modelIds: string[]) => Promise<ByokApplyResult>;
       refreshByokProvider: (provider: string) => Promise<ByokApplyResult>;
       removeByokProvider: (provider: string) => Promise<{ success: true; provider: string; removedModelIds: string[] }>;
+      discoverOpenAICompatible: (baseUrl: string, apiKey: string) => Promise<ByokDiscovery & { baseUrl: string }>;
+      applyOpenAICompatible: (baseUrl: string, apiKey: string, modelIds: string[]) => Promise<ByokApplyResult & { baseUrl: string }>;
       // Utilities
       openPath: (path: string) => Promise<void>;
     };

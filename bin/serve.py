@@ -550,6 +550,10 @@ class OroioHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_byok_refresh(data)
         elif path == '/api/byok/remove-provider':
             self.handle_byok_remove_provider(data)
+        elif path == '/api/byok/openai-compatible/discover':
+            self.handle_openai_compatible_discover(data)
+        elif path == '/api/byok/openai-compatible/apply':
+            self.handle_openai_compatible_apply(data)
         # DK config
         elif path == '/api/dk/config':
             self.handle_dk_config(data)
@@ -1057,6 +1061,31 @@ class OroioHandler(http.server.SimpleHTTPRequestHandler):
         try:
             result = byok_core.remove_provider(
                 str(data.get('provider', '')),
+                FACTORY_DIR,
+                self.oroio_dir,
+            )
+            self.send_json(result)
+        except byok_core.ByokError as error:
+            self.send_json(error.as_dict())
+
+    def handle_openai_compatible_discover(self, data):
+        try:
+            result = byok_core.discover_openai_compatible(
+                str(data.get('baseUrl', '')),
+                str(data.get('apiKey', '')),
+                FACTORY_DIR,
+                self.oroio_dir,
+            )
+            self.send_json(result)
+        except byok_core.ByokError as error:
+            self.send_json(error.as_dict())
+
+    def handle_openai_compatible_apply(self, data):
+        try:
+            result = byok_core.apply_openai_compatible(
+                str(data.get('baseUrl', '')),
+                str(data.get('apiKey', '')),
+                data.get('modelIds', []),
                 FACTORY_DIR,
                 self.oroio_dir,
             )

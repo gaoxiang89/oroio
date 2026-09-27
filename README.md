@@ -103,6 +103,8 @@ dk byok remove glm
 
 The same guided cards are available on the Web dashboard and in the desktop app. Setup validates the key against the provider's official model endpoint before changing any local config. A refresh keeps currently managed models selected, highlights newly discovered models without selecting them, and retains upstream models marked unavailable until you explicitly deselect them or remove the provider.
 
+The BYOK page also includes an **OpenAI-compatible** guided setup. Enter a Base URL and API key; oroio requests `<Base URL>/models`, lets you select the returned models, and writes them with Droid's `generic-chat-completion-api` provider. Local HTTP endpoints are supported, while redirects and URLs containing embedded credentials, query parameters, or fragments are rejected to reduce credential leakage risk.
+
 New entries are written to Droid's current `~/.factory/settings.json` `customModels` format. Existing legacy entries in `~/.factory/config.json` remain in that file when edited. oroio preserves unrelated settings and records only management metadata in `~/.oroio/byok.json`; it does not duplicate the API key there.
 
 > **Local key warning:** Droid needs the provider key at runtime, so these BYOK keys are stored as plaintext in your local Factory settings. The files are set to `0600` on POSIX systems, but anyone or any process that can read your account files can read the keys. Never commit either Factory settings file.

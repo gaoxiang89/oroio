@@ -8,6 +8,8 @@ import { fileURLToPath } from 'url'
 import { homedir } from 'os'
 import {
   applyProvider,
+  applyOpenAICompatible,
+  discoverOpenAICompatible,
   discoverProvider,
   listCustomModels,
   listProviders,
@@ -275,6 +277,12 @@ Command instructions here.
             }
             if (req.url === '/api/byok/remove-provider') {
               return sendJson(await removeProvider(String(data.provider || '')))
+            }
+            if (req.url === '/api/byok/openai-compatible/discover') {
+              return sendJson(await discoverOpenAICompatible(String(data.baseUrl || ''), String(data.apiKey || '')))
+            }
+            if (req.url === '/api/byok/openai-compatible/apply') {
+              return sendJson(await applyOpenAICompatible(String(data.baseUrl || ''), String(data.apiKey || ''), data.modelIds || []))
             }
             
             // DK config
