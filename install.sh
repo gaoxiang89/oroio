@@ -61,12 +61,17 @@ fetch_web_assets() {
   WEB_DIR="$DK_TMPDIR/web"
   install -d "$WEB_DIR"
 
-  local base="https://github.com/notdp/oroio/releases/download/web-dist"
+  local base="https://github.com/gaoxiang89/oroio/releases/download/web-dist"
+  local fallback="https://github.com/notdp/oroio/releases/download/web-dist"
   local ts
   ts=$(date +%s)
   printf '正在下载 web 资源...\n'
-  curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "${base}/index.html?ts=${ts}" \
-    -o "$WEB_DIR/index.html" || die "下载 index.html 失败"
+  if ! curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "${base}/index.html?ts=${ts}" \
+    -o "$WEB_DIR/index.html"; then
+    printf '当前仓库的 web-dist 尚不可用，回退到上游资源...\n'
+    curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "${fallback}/index.html?ts=${ts}" \
+      -o "$WEB_DIR/index.html" || die "下载 index.html 失败"
+  fi
 }
 
 locate_sources() {

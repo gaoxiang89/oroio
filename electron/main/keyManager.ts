@@ -9,6 +9,7 @@ const CURRENT_FILE = path.join(OROIO_DIR, 'current');
 const CACHE_FILE = path.join(OROIO_DIR, 'list_cache.b64');
 
 const SALT = 'oroio';
+const PROFILE_URL = 'https://api.factory.ai/api/app/auth/me';
 const LIMITS_URL = 'https://app.factory.ai/api/billing/limits';
 const USAGE_URL = 'https://app.factory.ai/api/organization/members/chat-usage';
 
@@ -20,6 +21,8 @@ export interface KeyUsage {
   raw: string;
   mode?: string;
   display?: string;
+  orgId?: string;
+  email?: string;
   extraCents?: number;
   coreUsed?: number;
   overagePref?: string;
@@ -132,6 +135,8 @@ function parseUsageInfo(text: string): KeyUsage {
     raw: data['RAW'] || '',
     mode: data['MODE'] || '',
     display: data['DISPLAY'] || '',
+    orgId: data['ORG_ID'] || '',
+    email: data['EMAIL'] || '',
     extraCents: data['EXTRA_CENTS'] ? parseFloat(data['EXTRA_CENTS']) : 0,
     coreUsed: data['CORE_USED'] ? parseFloat(data['CORE_USED']) : 0,
     overagePref: data['OVERAGE_PREF'] || '',
@@ -212,6 +217,8 @@ function emptyUsage(): KeyUsage {
     raw: '',
     mode: '',
     display: '',
+    orgId: '',
+    email: '',
     extraCents: 0,
     coreUsed: 0,
     overagePref: '',
@@ -334,8 +341,34 @@ async function fetchJson(url: string, key: string, signal: AbortSignal): Promise
   return { ok: true, status: response.status, data: await response.json() };
 }
 
+function cleanIdentity(value: unknown): string {
+  if (value == null || typeof value === 'object') return '';
+  return String(value).replace(/[\r\n]+/g, ' ').trim();
+}
+
+async function fetchIdentity(key: string): Promise<Pick<KeyUsage, 'orgId' | 'email'>> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 2000);
+  try {
+    const profile = await fetchJson(PROFILE_URL, key, controller.signal);
+    if (!profile.ok) return { orgId: '', email: '' };
+    const data = profile.data || {};
+    const organization = data.organization || {};
+    const user = data.userProfile || data.user || {};
+    return {
+      orgId: cleanIdentity(organization.id || data.organizationId || data.organization_id),
+      email: cleanIdentity(user.email || data.email),
+    };
+  } catch {
+    return { orgId: '', email: '' };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function fetchUsage(key: string): Promise<KeyUsage> {
-  const result = emptyUsage();
+  const identity = await fetchIdentity(key);
+  const result = { ...emptyUsage(), ...identity };
 
   for (let attempt = 1; attempt <= API_RETRIES; attempt++) {
     const controller = new AbortController();
@@ -345,7 +378,7 @@ async function fetchUsage(key: string): Promise<KeyUsage> {
       clearTimeout(timeout);
       if (limits.ok) {
         if (limits.data?.usesTokenRateLimitsBilling && limits.data?.limits != null) {
-          return parseRateLimits(limits.data);
+          return { ...parseRateLimits(limits.data), ...identity };
         }
         break;
       }
@@ -377,7 +410,7 @@ async function fetchUsage(key: string): Promise<KeyUsage> {
       const usage = await fetchJson(USAGE_URL, key, controller.signal);
       clearTimeout(timeout);
       if (usage.ok) {
-        return parseTokenUsage(usage.data);
+        return { ...parseTokenUsage(usage.data), ...identity };
       }
       if (usage.status >= 400 && usage.status < 500) {
         result.raw = `http_${usage.status}`;
@@ -414,6 +447,8 @@ async function writeCache(keys: string[], usages: KeyUsage[]): Promise<void> {
   for (let i = 0; i < usages.length; i++) {
     const u = usages[i];
     const info = [
+      `ORG_ID=${u.orgId ?? ''}`,
+      `EMAIL=${u.email ?? ''}`,
       `MODE=${u.mode ?? ''}`,
       `DISPLAY=${u.display ?? ''}`,
       `BALANCE=${u.balance ?? 0}`,

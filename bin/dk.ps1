@@ -318,17 +318,19 @@ function Ensure-WebAssets {
     if (Test-Path $indexPath) { return }
     
     Write-Host "正在下载 web 控制台静态文件..."
-    $base = "https://github.com/notdp/oroio/releases/download/web-dist"
+    $base = "https://github.com/gaoxiang89/oroio/releases/download/web-dist"
+    $fallback = "https://github.com/notdp/oroio/releases/download/web-dist"
     $ts = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     $tmp = Join-Path $env:TEMP "oroio-web-$ts"
     try {
         New-Item -ItemType Directory -Path $tmp -Force | Out-Null
-        $assetsDir = Join-Path $tmp "assets"
-        New-Item -ItemType Directory -Path $assetsDir -Force | Out-Null
-        
-        Invoke-WebRequest -Uri "$base/index.html?ts=$ts" -OutFile (Join-Path $tmp "index.html") -UseBasicParsing
-        Invoke-WebRequest -Uri "$base/index.js?ts=$ts" -OutFile (Join-Path $assetsDir "index.js") -UseBasicParsing
-        Invoke-WebRequest -Uri "$base/index.css?ts=$ts" -OutFile (Join-Path $assetsDir "index.css") -UseBasicParsing
+        try {
+            Invoke-WebRequest -Uri "$base/index.html?ts=$ts" -OutFile (Join-Path $tmp "index.html") -UseBasicParsing
+        }
+        catch {
+            Write-Host "当前仓库的 web-dist 尚不可用，回退到上游资源..." -ForegroundColor Yellow
+            Invoke-WebRequest -Uri "$fallback/index.html?ts=$ts" -OutFile (Join-Path $tmp "index.html") -UseBasicParsing
+        }
         
         if (-not (Test-Path $WebDir)) { New-Item -ItemType Directory -Path $WebDir -Force | Out-Null }
         Copy-Item -Path (Join-Path $tmp "*") -Destination $WebDir -Recurse -Force
@@ -379,6 +381,8 @@ function Invalidate-Cache {
 
 function New-EmptyUsage {
     return @{
+        ORG_ID = ""
+        EMAIL = ""
         MODE = ""
         DISPLAY = ""
         BALANCE = 0
@@ -513,12 +517,25 @@ function Fetch-Usage {
         "Accept" = "application/json"
     }
 
+    try {
+        $profile = Invoke-RestMethod -Uri "https://api.factory.ai/api/app/auth/me" `
+            -Headers $headers -Method Get -TimeoutSec 2 -ErrorAction Stop
+        $result.ORG_ID = ([string]$profile.organization.id) -replace '[\r\n]+', ' '
+        $result.EMAIL = ([string]$profile.userProfile.email) -replace '[\r\n]+', ' '
+    }
+    catch {
+        # Identity is optional; do not fail an otherwise valid usage request.
+    }
+
     for ($attempt = 1; $attempt -le $script:CURL_RETRIES; $attempt++) {
         try {
             $response = Invoke-RestMethod -Uri "https://app.factory.ai/api/billing/limits" `
                 -Headers $headers -Method Get -TimeoutSec $script:CURL_TIMEOUT -ErrorAction Stop
             if ($response.usesTokenRateLimitsBilling -and $null -ne $response.limits) {
-                return ConvertFrom-RateLimits -Data $response
+                $usage = ConvertFrom-RateLimits -Data $response
+                $usage.ORG_ID = $result.ORG_ID
+                $usage.EMAIL = $result.EMAIL
+                return $usage
             }
             break
         }
@@ -541,7 +558,10 @@ function Fetch-Usage {
         try {
             $response = Invoke-RestMethod -Uri "https://app.factory.ai/api/organization/members/chat-usage" `
                 -Headers $headers -Method Get -TimeoutSec $script:CURL_TIMEOUT -ErrorAction Stop
-            return ConvertFrom-TokenUsage -Data $response
+            $usage = ConvertFrom-TokenUsage -Data $response
+            $usage.ORG_ID = $result.ORG_ID
+            $usage.EMAIL = $result.EMAIL
+            return $usage
         }
         catch [System.Net.WebException] {
             $statusCode = [int]$_.Exception.Response.StatusCode
@@ -653,6 +673,7 @@ function Fetch-UsageParallel {
     $scriptBlock = {
         param([string]$Key, [int]$Timeout, [int]$Retries)
         $result = @{
+            ORG_ID = ""; EMAIL = ""
             MODE = ""; DISPLAY = ""; BALANCE = 0; BALANCE_NUM = 0; TOTAL = 0; USED = 0
             EXPIRES = "?"; EXTRA_CENTS = 0; CORE_USED = 0; OVERAGE_PREF = ""; RAW = ""
         }
@@ -661,6 +682,12 @@ function Fetch-UsageParallel {
             "User-Agent" = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
             "Accept" = "application/json"
         }
+        try {
+            $profile = Invoke-RestMethod -Uri "https://api.factory.ai/api/app/auth/me" `
+                -Headers $headers -Method Get -TimeoutSec 2 -ErrorAction Stop
+            $result.ORG_ID = ([string]$profile.organization.id) -replace '[\r\n]+', ' '
+            $result.EMAIL = ([string]$profile.userProfile.email) -replace '[\r\n]+', ' '
+        } catch {}
         $useLegacy = $true
         for ($attempt = 1; $attempt -le $Retries; $attempt++) {
             try {
@@ -799,8 +826,8 @@ function Cmd-List {
     $usageResults = Fetch-UsageParallel -Keys $keys
     
     Write-Host ""
-    Write-Host ("  {0,-4} {1,-16} {2,-30} {3,-12}" -f "No", "Key", "Usage", "Expiry")
-    Write-Host ("  " + ("-" * 66))
+    Write-Host ("  {0,-4} {1,-16} {2,-26} {3,-22} {4,-30} {5,-12}" -f "No", "Key", "Email", "Org ID", "Usage", "Expiry")
+    Write-Host ("  " + ("-" * 118))
     
     for ($i = 0; $i -lt $keys.Length; $i++) {
         $key = $keys[$i]
@@ -830,7 +857,9 @@ function Cmd-List {
         else {
             Write-Host ("{0} {1,-4} " -f $marker, $idx) -NoNewline
         }
-        Write-Host ("{0,-16} {1,-30} {2,-12}" -f $maskedKey, $usageDisplay, $exp) -ForegroundColor $color
+        $email = if ($usage.EMAIL) { $usage.EMAIL } else { "-" }
+        $orgId = if ($usage.ORG_ID) { $usage.ORG_ID } else { "-" }
+        Write-Host ("{0,-16} {1,-26} {2,-22} {3,-30} {4,-12}" -f $maskedKey, $email, $orgId, $usageDisplay, $exp) -ForegroundColor $color
     }
     Write-Host ""
 }
@@ -852,6 +881,8 @@ function Cmd-Current {
     Write-Host ""
     Write-Host "  No:     $idx"
     Write-Host "  Key:    $key"
+    Write-Host "  Email:  $(if ($usage.EMAIL) { $usage.EMAIL } else { '-' })"
+    Write-Host "  Org ID: $(if ($usage.ORG_ID) { $usage.ORG_ID } else { '-' })"
     
     $bar = Render-Bar -Remain $usage.BALANCE_NUM -Total $usage.TOTAL -Length 20
     $usageText = if ($usage.DISPLAY) { $usage.DISPLAY } else { "{0}/{1}" -f (Format-CompactNumber $usage.USED), (Format-CompactNumber $usage.TOTAL) }

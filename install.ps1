@@ -58,12 +58,19 @@ Write-Info "Preparing web dashboard assets..."
 $webDst = Join-Path $OROIO_DIR "web"
 if (-not (Test-Path $webDst)) { New-Item -ItemType Directory -Path $webDst -Force | Out-Null }
 
-$webBase = "https://github.com/notdp/oroio/releases/download/web-dist"
+$webBase = "https://github.com/gaoxiang89/oroio/releases/download/web-dist"
+$webFallback = "https://github.com/notdp/oroio/releases/download/web-dist"
 try {
     Invoke-WebRequest -Uri "$webBase/index.html`?ts=$ts" -OutFile (Join-Path $webDst "index.html") -UseBasicParsing
 }
 catch {
-    Write-Warn "Failed to download web assets: $($_.Exception.Message)"
+    Write-Warn "Current web-dist is unavailable; falling back to upstream assets."
+    try {
+        Invoke-WebRequest -Uri "$webFallback/index.html`?ts=$ts" -OutFile (Join-Path $webDst "index.html") -UseBasicParsing
+    }
+    catch {
+        Write-Warn "Failed to download web assets: $($_.Exception.Message)"
+    }
 }
 
 # Add to PATH if not already

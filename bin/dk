@@ -47,6 +47,7 @@ DKM_CURL_RETRIES="${DKM_CURL_RETRIES:-3}"          # 重试次数
 DKM_LIST_AUTO_MAX="${DKM_LIST_AUTO_MAX:-6}"        # 自动模式的最大并发上限
 DKM_LIST_JOBS="${DKM_LIST_JOBS:-0}"                # 0 表示自动 min(DKM_LIST_AUTO_MAX, key数)
 DKM_CACHE_TTL="${DKM_CACHE_TTL:-30}"                # list 结果缓存 TTL（秒，0 关闭）
+DKM_PROFILE_URL="https://api.factory.ai/api/app/auth/me"
 DKM_LIMITS_URL="https://app.factory.ai/api/billing/limits"
 DKM_USAGE_URL="https://app.factory.ai/api/organization/members/chat-usage"
 
@@ -258,12 +259,14 @@ copy_to_clipboard() {
 
 dkm_http_get() {
   local url="$1" key="$2"
+  local max_time="${3:-$DKM_CURL_MAX_TIME}"
+  local retries="${4:-$DKM_CURL_RETRIES}"
   local resp attempt
   DKM_HTTP_STATUS=000
   DKM_HTTP_BODY=""
-  for (( attempt=1; attempt<=DKM_CURL_RETRIES; attempt++ )); do
+  for (( attempt=1; attempt<=retries; attempt++ )); do
     if resp=$(curl -sS --retry 0 \
-      --connect-timeout "$DKM_CURL_CONNECT_TIMEOUT" --max-time "$DKM_CURL_MAX_TIME" \
+      --connect-timeout "$DKM_CURL_CONNECT_TIMEOUT" --max-time "$max_time" \
       -w '\n%{http_code}' -X GET "$url" \
       -H "Authorization: Bearer ${key}" \
       -H 'Accept: application/json' \
@@ -275,8 +278,46 @@ dkm_http_get() {
         return
       fi
     fi
-    (( attempt < DKM_CURL_RETRIES )) && sleep 0.5
+    (( attempt < retries )) && sleep 0.5
   done
+  return 0
+}
+
+parse_factory_identity_json() {
+  python3 -c '
+import json, sys
+
+def clean(value):
+    if value is None or isinstance(value, (dict, list)):
+        return ""
+    return " ".join(str(value).splitlines()).strip()
+
+try:
+    data = json.load(sys.stdin)
+    organization = data.get("organization") or {}
+    profile = data.get("userProfile") or data.get("user") or {}
+    org_id = organization.get("id") or data.get("organizationId") or data.get("organization_id")
+    email = profile.get("email") or data.get("email")
+    print(f"ORG_ID={clean(org_id)}")
+    print(f"EMAIL={clean(email)}")
+except Exception:
+    print("ORG_ID=")
+    print("EMAIL=")
+'
+}
+
+fetch_identity() {
+  local key="$1" parsed
+  # 身份信息用于区分 key，不应拖慢主要用量请求或影响其成功状态。
+  dkm_http_get "$DKM_PROFILE_URL" "$key" 2 1
+  if [ "$DKM_HTTP_STATUS" = "200" ]; then
+    parsed=$(printf "%s" "$DKM_HTTP_BODY" | parse_factory_identity_json) || parsed=""
+    if [ -n "$parsed" ]; then
+      printf "%s\n" "$parsed"
+      return
+    fi
+  fi
+  printf "ORG_ID=\nEMAIL=\n"
 }
 
 parse_factory_json() {
@@ -470,16 +511,19 @@ except Exception:
 }
 
 fetch_usage() {
-  local key="$1" parsed
+  local key="$1" parsed identity
+
+  identity=$(fetch_identity "$key")
 
   dkm_http_get "$DKM_LIMITS_URL" "$key"
   if [ "$DKM_HTTP_STATUS" = "200" ]; then
     parsed=$(printf "%s" "$DKM_HTTP_BODY" | parse_factory_json) || parsed=""
     if [[ "$parsed" == *$'\n'MODE=rate$'\n'* || "$parsed" == MODE=rate$'\n'* ]]; then
-      printf "%s\n" "$parsed"
+      printf "%s\n%s\n" "$identity" "$parsed"
       return
     fi
   elif [[ "$DKM_HTTP_STATUS" =~ ^4[0-9]{2}$ ]] && [ "$DKM_HTTP_STATUS" != "404" ]; then
+    printf "%s\n" "$identity"
     printf "MODE=\nDISPLAY=\nBALANCE=0\nBALANCE_NUM=0\nTOTAL=0\nUSED=0\nEXPIRES=Invalid key\nEXPIRES_FULL=Invalid key\nEXPIRES_TS=\nEXTRA_CENTS=0\nCORE_USED=0\nOVERAGE_PREF=\nRAW=http_%s\n" "$DKM_HTTP_STATUS"
     return
   fi
@@ -487,16 +531,19 @@ fetch_usage() {
   dkm_http_get "$DKM_USAGE_URL" "$key"
   if [ "$DKM_HTTP_STATUS" = "200" ]; then
     if ! parsed=$(printf "%s" "$DKM_HTTP_BODY" | parse_factory_json); then
+      printf "%s\n" "$identity"
       printf "MODE=\nDISPLAY=\nBALANCE=0\nBALANCE_NUM=0\nTOTAL=0\nUSED=0\nEXPIRES=?\nEXPIRES_FULL=?\nEXPIRES_TS=\nEXTRA_CENTS=0\nCORE_USED=0\nOVERAGE_PREF=\nRAW=python_error\n"
       return
     fi
-    printf "%s\n" "$parsed"
+    printf "%s\n%s\n" "$identity" "$parsed"
     return
   elif [[ "$DKM_HTTP_STATUS" =~ ^4[0-9]{2}$ ]]; then
+    printf "%s\n" "$identity"
     printf "MODE=\nDISPLAY=\nBALANCE=0\nBALANCE_NUM=0\nTOTAL=0\nUSED=0\nEXPIRES=Invalid key\nEXPIRES_FULL=Invalid key\nEXPIRES_TS=\nEXTRA_CENTS=0\nCORE_USED=0\nOVERAGE_PREF=\nRAW=http_%s\n" "$DKM_HTTP_STATUS"
     return
   fi
 
+  printf "%s\n" "$identity"
   printf "MODE=\nDISPLAY=\nBALANCE=0\nBALANCE_NUM=0\nTOTAL=0\nUSED=0\nEXPIRES=?\nEXPIRES_FULL=?\nEXPIRES_TS=\nEXTRA_CENTS=0\nCORE_USED=0\nOVERAGE_PREF=\nRAW=curl_error\n"
 }
 
@@ -911,12 +958,12 @@ cmd_list() {
   cur=$(current_index)
   cols=${COLUMNS:-$(tput cols 2>/dev/null || echo 120)}
 
-  local expw=12           # Expiry 列固定宽度
-  local keyw=22 progw=38  # 默认列宽；用量优先展示 5h/7d/30d
-  local min_key=18 min_prog=26
+  local expw=12
+  local keyw=16 emailw=24 orgw=20 progw=30
+  local min_key=14 min_email=16 min_org=12 min_prog=22
 
-  # 行总宽度估算 = 各列宽 + 分隔符/空格(约17)
-  local total_needed=$(( keyw + progw + expw + 17 ))
+  # 行总宽度估算 = 各列宽 + 分隔符/空格(约23)
+  local total_needed=$(( keyw + emailw + orgw + progw + expw + 23 ))
   if (( total_needed > cols )); then
     local over=$(( total_needed - cols ))
     local cut=$(( keyw - min_key ))
@@ -924,6 +971,22 @@ cmd_list() {
       local delta=$(( over < cut ? over : cut ))
       keyw=$(( keyw - delta ))
       over=$(( over - delta ))
+    fi
+    if (( over > 0 )); then
+      cut=$(( emailw - min_email ))
+      if (( cut > 0 )); then
+        local delta=$(( over < cut ? over : cut ))
+        emailw=$(( emailw - delta ))
+        over=$(( over - delta ))
+      fi
+    fi
+    if (( over > 0 )); then
+      cut=$(( orgw - min_org ))
+      if (( cut > 0 )); then
+        local delta=$(( over < cut ? over : cut ))
+        orgw=$(( orgw - delta ))
+        over=$(( over - delta ))
+      fi
     fi
     if (( over > 0 )); then
       cut=$(( progw - min_prog ))
@@ -936,7 +999,7 @@ cmd_list() {
   fi
 
   # 预渲染数据（避免重复请求）；使用全局统一的进度条长度保证用量对齐
-  local -a ROW_NO ROW_KEY ROW_EXP USAGE_TXT BALNUM_ARR TOTAL_ARR REMAIN_ARR RAW_ARR
+  local -a ROW_NO ROW_KEY ROW_EMAIL ROW_ORG ROW_EXP USAGE_TXT BALNUM_ARR TOTAL_ARR REMAIN_ARR RAW_ARR
   local i=0 max_usage_len=0
   for line in "${KEYS[@]}"; do
     ((++i))
@@ -947,7 +1010,7 @@ cmd_list() {
     else
       info="${FETCH_INFOS[$((i-1))]}"
     fi
-    local bal="" balnum="" total="" used="" exp="" exp_full="" raw="" display="" mode=""
+    local bal="" balnum="" total="" used="" exp="" exp_full="" raw="" display="" mode="" email="" org_id=""
     while IFS='=' read -r k v; do
       case "$k" in
         BALANCE) bal="$v";;
@@ -959,6 +1022,8 @@ cmd_list() {
         RAW) raw="$v";;
         DISPLAY) display="$v";;
         MODE) mode="$v";;
+        EMAIL) email="$v";;
+        ORG_ID) org_id="$v";;
       esac
     done <<<"$info"
 
@@ -1000,6 +1065,8 @@ cmd_list() {
 
     ROW_NO+=("$i")
     ROW_KEY+=("$row_key")
+    ROW_EMAIL+=("${email:--}")
+    ROW_ORG+=("${org_id:--}")
     ROW_EXP+=("$row_exp")
     USAGE_TXT+=("$display_usage")
     BALNUM_ARR+=("$balnum")
@@ -1030,37 +1097,51 @@ cmd_list() {
     ROW_USAGE+=( "${bar} ${usage_txt}" )
   done
 
-  local h1 h2 h3 h4
+  local h1 h2 h3 h4 h5 h6
   h1=$(color_black_bold "No")
   h2=$(color_black_bold "Key")
-  h3=$(color_black_bold "Usage")
-  h4=$(color_black_bold "Expiry")
+  h3=$(color_black_bold "Email")
+  h4=$(color_black_bold "Org ID")
+  h5=$(color_black_bold "Usage")
+  h6=$(color_black_bold "Expiry")
   local top mid bot
-  top=$(printf "%s%s%s%s%s%s%s%s%s" \
+  top=$(printf "%s%s%s%s%s%s%s%s%s%s%s%s%s" \
     "$B_TL" \
     "$(printf '%*s' $((4+2)) '' | tr ' ' "$B_H")" \
     "$B_TT" \
     "$(printf '%*s' $((keyw+2)) '' | tr ' ' "$B_H")" \
     "$B_TT" \
+    "$(printf '%*s' $((emailw+2)) '' | tr ' ' "$B_H")" \
+    "$B_TT" \
+    "$(printf '%*s' $((orgw+2)) '' | tr ' ' "$B_H")" \
+    "$B_TT" \
     "$(printf '%*s' $((progw+2)) '' | tr ' ' "$B_H")" \
     "$B_TT" \
     "$(printf '%*s' $((expw+2)) '' | tr ' ' "$B_H")" \
     "$B_TR")
-  mid=$(printf "%s%s%s%s%s%s%s%s%s" \
+  mid=$(printf "%s%s%s%s%s%s%s%s%s%s%s%s%s" \
     "$B_TL_MID" \
     "$(printf '%*s' $((4+2)) '' | tr ' ' "$B_H")" \
     "$B_X" \
     "$(printf '%*s' $((keyw+2)) '' | tr ' ' "$B_H")" \
     "$B_X" \
+    "$(printf '%*s' $((emailw+2)) '' | tr ' ' "$B_H")" \
+    "$B_X" \
+    "$(printf '%*s' $((orgw+2)) '' | tr ' ' "$B_H")" \
+    "$B_X" \
     "$(printf '%*s' $((progw+2)) '' | tr ' ' "$B_H")" \
     "$B_X" \
     "$(printf '%*s' $((expw+2)) '' | tr ' ' "$B_H")" \
     "$B_TR_MID")
-  bot=$(printf "%s%s%s%s%s%s%s%s%s" \
+  bot=$(printf "%s%s%s%s%s%s%s%s%s%s%s%s%s" \
     "$B_BL" \
     "$(printf '%*s' $((4+2)) '' | tr ' ' "$B_H")" \
     "$B_TB" \
     "$(printf '%*s' $((keyw+2)) '' | tr ' ' "$B_H")" \
+    "$B_TB" \
+    "$(printf '%*s' $((emailw+2)) '' | tr ' ' "$B_H")" \
+    "$B_TB" \
+    "$(printf '%*s' $((orgw+2)) '' | tr ' ' "$B_H")" \
     "$B_TB" \
     "$(printf '%*s' $((progw+2)) '' | tr ' ' "$B_H")" \
     "$B_TB" \
@@ -1068,29 +1149,39 @@ cmd_list() {
     "$B_BR")
 
   printf "%s\n" "$top"
-  printf "%s %s %s %s %s %s %s %s %s\n" \
+  printf "%s %s %s %s %s %s %s %s %s %s %s %s %s\n" \
     "$B_V" \
     "$(pad_cell "$h1" 4)" \
     "$B_V" \
     "$(pad_cell "$h2" $keyw)" \
     "$B_V" \
-    "$(pad_cell "$h3" $progw)" \
+    "$(pad_cell "$h3" $emailw)" \
     "$B_V" \
-    "$(pad_cell "$h4" $expw)" \
+    "$(pad_cell "$h4" $orgw)" \
+    "$B_V" \
+    "$(pad_cell "$h5" $progw)" \
+    "$B_V" \
+    "$(pad_cell "$h6" $expw)" \
     "$B_V"
   printf "%s\n" "$mid"
 
   local idx=0
   for _ in "${KEYS[@]}"; do
-    local key_cell usage_cell exp_cell
+    local key_cell email_cell org_cell usage_cell exp_cell
     key_cell=$(clip_pad "${ROW_KEY[$idx]}" "$keyw")
+    email_cell=$(clip_pad "${ROW_EMAIL[$idx]}" "$emailw")
+    org_cell=$(clip_pad "${ROW_ORG[$idx]}" "$orgw")
     usage_cell=$(clip_pad "${ROW_USAGE[$idx]}" "$progw")
     exp_cell=$(clip_pad "${ROW_EXP[$idx]}" $expw)
-    printf "%s %s %s %s %s %s %s %s %s\n" \
+    printf "%s %s %s %s %s %s %s %s %s %s %s %s %s\n" \
       "$B_V" \
       "$(pad_cell "${ROW_NO[$idx]}" 4)" \
       "$B_V" \
       "$key_cell" \
+      "$B_V" \
+      "$email_cell" \
+      "$B_V" \
+      "$org_cell" \
       "$B_V" \
       "$usage_cell" \
       "$B_V" \
@@ -1110,7 +1201,7 @@ cmd_current() {
   if (( cur > ${#KEYS[@]} )); then cur=1; fi
   IFS=$'\t' read -r key label <<<"${KEYS[$((cur-1))]}"
   info=$(fetch_usage "$key")
-  local bal="" exp="" exp_full="" balnum="" total="" used="" raw="" display="" alert=0
+  local bal="" exp="" exp_full="" balnum="" total="" used="" raw="" display="" email="" org_id="" alert=0
   while IFS='=' read -r k v; do
     case "$k" in
       BALANCE) bal="$v";;
@@ -1121,6 +1212,8 @@ cmd_current() {
       EXPIRES_FULL) exp_full="$v";;
       RAW) raw="$v";;
       DISPLAY) display="$v";;
+      EMAIL) email="$v";;
+      ORG_ID) org_id="$v";;
     esac
   done <<<"$info"
   local label_w=8
@@ -1131,6 +1224,8 @@ cmd_current() {
   local exp_len=${#exp_str}
   if (( key_len > value_w )); then value_w=$key_len; fi
   if (( exp_len > value_w )); then value_w=$exp_len; fi
+  if (( ${#email} > value_w )); then value_w=${#email}; fi
+  if (( ${#org_id} > value_w )); then value_w=${#org_id}; fi
 
   local usage_text
   if [[ -n "$display" ]]; then
@@ -1196,6 +1291,8 @@ cmd_current() {
   printf "%s\n" "$border"
   printf "%s %-*s %s %-*s %s\n" "$vert" "$label_w" "No"    "$vert" "$value_w" "$cur"          "$vert"
   printf "%s %-*s %s %-*s %s\n" "$vert" "$label_w" "Key"   "$vert" "$value_w" "$key_display" "$vert"
+  printf "%s %-*s %s %-*s %s\n" "$vert" "$label_w" "Email" "$vert" "$value_w" "${email:--}" "$vert"
+  printf "%s %-*s %s %-*s %s\n" "$vert" "$label_w" "Org ID" "$vert" "$value_w" "${org_id:--}" "$vert"
   printf "%s %-*s %s %-*s %s\n" "$vert" "$label_w" "Usage" "$vert" "$value_w" "$bar $usage_text" "$vert"
   printf "%s %-*s %s %-*s %s\n" "$vert" "$label_w" "Expiry" "$vert" "$value_w" "$exp_display" "$vert"
   printf "%s%s%s%s%s\n" \
@@ -1228,14 +1325,20 @@ cmd_use() {
     fi
     local cur; cur=$(current_index)
     local cols=${COLUMNS:-$(tput cols 2>/dev/null || echo 120)}
-    local keyw=20 progw=34 min_key=14 min_prog=26 expw=12
-    local padding=10 # brackets/spacing buffer
-    local need=$((keyw+progw+expw+padding))
+    local keyw=16 identityw=32 progw=30 min_key=14 min_identity=18 min_prog=22 expw=12
+    local padding=11 # brackets/spacing buffer
+    local need=$((keyw+identityw+progw+expw+padding))
     if (( cols < need )); then
       local extra=$((need - cols))
       local cut=$((keyw - min_key))
       if (( cut>0 )); then
         if (( extra <= cut )); then keyw=$((keyw-extra)); extra=0; else keyw=$min_key; extra=$((extra-cut)); fi
+      fi
+      if (( extra>0 )); then
+        cut=$((identityw - min_identity))
+        if (( cut>0 )); then
+          if (( extra <= cut )); then identityw=$((identityw-extra)); extra=0; else identityw=$min_identity; extra=$((extra-cut)); fi
+        fi
       fi
       if (( extra>0 )); then
         cut=$((progw - min_prog))
@@ -1246,7 +1349,7 @@ cmd_use() {
     fi
 
     local -a opts=()
-    local -a USAGE_TXT BALNUM_ARR TOTAL_ARR REMAIN_ARR EXP_ARR KEY_DISP_ARR RAW_ARR ALERT_KEY
+    local -a USAGE_TXT BALNUM_ARR TOTAL_ARR REMAIN_ARR EXP_ARR KEY_DISP_ARR IDENTITY_ARR RAW_ARR ALERT_KEY
     local i=0 max_usage_len=0
 
     # 第一次遍历：收集数据并求最大用量文本长度
@@ -1254,7 +1357,7 @@ cmd_use() {
       ((++i))
       IFS=$'\t' read -r key label <<<"$line"
       info="${FETCH_INFOS[$((i-1))]}"
-      local balnum="" total="" used="" exp="" raw="" display=""
+      local balnum="" total="" used="" exp="" raw="" display="" email="" org_id=""
       while IFS='=' read -r k v; do
         case "$k" in
           BALANCE_NUM) balnum="$v";;
@@ -1263,6 +1366,8 @@ cmd_use() {
           EXPIRES) exp="$v";;
           RAW) raw="$v";;
           DISPLAY) display="$v";;
+          EMAIL) email="$v";;
+          ORG_ID) org_id="$v";;
         esac
       done <<<"$info"
 
@@ -1300,6 +1405,15 @@ cmd_use() {
       REMAIN_ARR+=("$remain")
       EXP_ARR+=("$exp_display")
       KEY_DISP_ARR+=("$key_disp")
+      if [[ -n "$email" && -n "$org_id" ]]; then
+        IDENTITY_ARR+=("${email} | ${org_id}")
+      elif [[ -n "$email" ]]; then
+        IDENTITY_ARR+=("$email")
+      elif [[ -n "$org_id" ]]; then
+        IDENTITY_ARR+=("$org_id")
+      else
+        IDENTITY_ARR+=("-")
+      fi
       RAW_ARR+=("$raw")
       ALERT_KEY+=("$alert")
     done
@@ -1310,7 +1424,7 @@ cmd_use() {
 
     # 第二次遍历：渲染选项
     for ((idx=0; idx<${#KEYS[@]}; idx++)); do
-      local bar display_usage remain total balnum usage_disp exp_disp key_cell raw alert
+      local bar display_usage remain total balnum usage_disp exp_disp key_cell identity_cell raw alert
       display_usage="${USAGE_TXT[$idx]}"
       balnum="${BALNUM_ARR[$idx]}"
       total="${TOTAL_ARR[$idx]}"
@@ -1325,7 +1439,8 @@ cmd_use() {
       usage_disp=$(pad_cell "${bar} ${display_usage}" "$progw")
       exp_disp=$(pad_cell "${EXP_ARR[$idx]}" "$expw")
       key_cell=$(clip_pad "${KEY_DISP_ARR[$idx]}" "$keyw")
-      opts+=("[$((idx+1))] ${key_cell} ${usage_disp} ${exp_disp}")
+      identity_cell=$(clip_pad "${IDENTITY_ARR[$idx]}" "$identityw")
+      opts+=("[$((idx+1))] ${key_cell} ${identity_cell} ${usage_disp} ${exp_disp}")
     done
 
     local sel

@@ -117,6 +117,7 @@ def encrypt_keys(keys: list, keys_file: str):
             check=True
         )
 
+PROFILE_URL = 'https://api.factory.ai/api/app/auth/me'
 LIMITS_URL = 'https://app.factory.ai/api/billing/limits'
 USAGE_URL = 'https://app.factory.ai/api/organization/members/chat-usage'
 API_TIMEOUT = 8
@@ -133,6 +134,8 @@ def _factory_headers(key: str) -> dict:
 
 def _empty_usage() -> dict:
     return {
+        'ORG_ID': '',
+        'EMAIL': '',
         'MODE': '',
         'DISPLAY': '',
         'BALANCE': 0,
@@ -262,22 +265,41 @@ def parse_token_usage(data: dict) -> dict:
             result['EXPIRES'] = str(exp_raw)
     return result
 
-def _get_json(url: str, key: str):
+def _get_json(url: str, key: str, timeout: int = API_TIMEOUT):
     req = urllib.request.Request(url, headers=_factory_headers(key))
-    with urllib.request.urlopen(req, timeout=API_TIMEOUT) as resp:
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode('utf-8'))
+
+def fetch_identity(key: str) -> dict:
+    """Best-effort account identity lookup; usage remains available if it fails."""
+    try:
+        data = _get_json(PROFILE_URL, key, timeout=2)
+        organization = data.get('organization') or {}
+        profile = data.get('userProfile') or data.get('user') or {}
+        org_id = organization.get('id') or data.get('organizationId') or data.get('organization_id') or ''
+        email = profile.get('email') or data.get('email') or ''
+        return {
+            'ORG_ID': ' '.join(str(org_id).splitlines()).strip(),
+            'EMAIL': ' '.join(str(email).splitlines()).strip(),
+        }
+    except Exception:
+        return {'ORG_ID': '', 'EMAIL': ''}
 
 def fetch_usage(key: str) -> dict:
     """获取单个 key 的用量：优先 Factory 滚动限额，否则回退到旧 token 额度。"""
     import time
     result = _empty_usage()
+    identity = fetch_identity(key)
+    result.update(identity)
     last_error = None
 
     for attempt in range(API_RETRIES):
         try:
             data = _get_json(LIMITS_URL, key)
             if data.get('usesTokenRateLimitsBilling') and data.get('limits') is not None:
-                return parse_rate_limits(data)
+                usage = parse_rate_limits(data)
+                usage.update(identity)
+                return usage
             break
         except urllib.error.HTTPError as e:
             if e.code == 404:
@@ -301,7 +323,9 @@ def fetch_usage(key: str) -> dict:
     for attempt in range(API_RETRIES):
         try:
             data = _get_json(USAGE_URL, key)
-            return parse_token_usage(data)
+            usage = parse_token_usage(data)
+            usage.update(identity)
+            return usage
         except urllib.error.HTTPError as e:
             result['RAW'] = f'http_{e.code}'
             result['EXPIRES'] = 'Invalid key'
@@ -330,6 +354,8 @@ def write_cache(keys_file: str, cache_file: str, keys: list, usages: list):
     lines = [str(now), keys_hash]
     for i, u in enumerate(usages):
         info = '\n'.join([
+            f"ORG_ID={u.get('ORG_ID', '')}",
+            f"EMAIL={u.get('EMAIL', '')}",
             f"MODE={u.get('MODE', '')}",
             f"DISPLAY={u.get('DISPLAY', '')}",
             f"BALANCE={u.get('BALANCE', 0)}",

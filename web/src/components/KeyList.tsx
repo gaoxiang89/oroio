@@ -558,18 +558,20 @@ export default function KeyList() {
           <colgroup>
             <col style={{ width: '4%' }} />
             <col style={{ width: '4%' }} />
-            <col style={{ width: '17%' }} />
-            <col style={{ width: '17%' }} />
+            <col style={{ width: '14%' }} />
+            <col style={{ width: '20%' }} />
+            <col style={{ width: '13%' }} />
             <col style={{ width: '7%' }} />
             <col style={{ width: '15%' }} />
-            <col style={{ width: '15%' }} />
-            <col style={{ width: '10%' }} />
+            <col style={{ width: '12%' }} />
+            <col style={{ width: '9%' }} />
           </colgroup>
           <TableHeader>
             <TableRow className="bg-muted/30 hover:bg-muted/30">
               <TableHead></TableHead>
               <TableHead className="text-xs tracking-wider">NO</TableHead>
               <TableHead className="text-xs tracking-wider">KEY</TableHead>
+              <TableHead className="text-xs tracking-wider">ACCOUNT</TableHead>
               <TableHead className="text-xs tracking-wider">NOTE</TableHead>
               <SortableHeader field="percent" label="%" align="right" sortConfig={sortConfig} onSort={handleSort} />
               <SortableHeader field="quota" label="QUOTA" align="right" sortConfig={sortConfig} onSort={handleSort} />
@@ -621,6 +623,12 @@ export default function KeyList() {
                       keyText={info.key}
                       isCurrent={info.isCurrent}
                     />
+                  </TableCell>
+                  <TableCell className="py-2 min-w-0">
+                    <div className="min-w-0" title={`${info.usage?.email || '-'}\n${info.usage?.orgId || '-'}`}>
+                      <div className="text-xs truncate">{info.usage?.email || '-'}</div>
+                      <div className="text-[10px] font-mono text-muted-foreground truncate">{info.usage?.orgId || '-'}</div>
+                    </div>
                   </TableCell>
                   <TableCell className="py-2">
                     <NoteCell key={info.key} keyText={info.key} onUpdate={() => setNotesVersion(v => v + 1)} />

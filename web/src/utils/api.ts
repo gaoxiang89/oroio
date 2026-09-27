@@ -6,6 +6,8 @@ export interface KeyUsage {
   raw: string;
   mode?: string;
   display?: string;
+  orgId?: string;
+  email?: string;
 }
 
 export interface KeyInfo {
@@ -161,6 +163,8 @@ function parseUsageInfo(text: string): KeyUsage {
     raw: data['RAW'] || '',
     mode: data['MODE'] || '',
     display: data['DISPLAY'] || '',
+    orgId: data['ORG_ID'] || '',
+    email: data['EMAIL'] || '',
   };
 }
 
