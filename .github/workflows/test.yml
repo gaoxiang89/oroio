@@ -1,0 +1,71 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    paths:
+      - 'bin/**'
+      - 'electron/**'
+      - 'web/**'
+      - 'tests/**'
+      - '*.sh'
+      - '*.ps1'
+      - '.github/workflows/test.yml'
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: |
+            web/package-lock.json
+            electron/package-lock.json
+
+      - name: Python and shell tests
+        run: |
+          python -m unittest discover -s tests -v
+          python -m py_compile bin/byok.py bin/serve.py
+          bash -n bin/dk install.sh reinstall.sh uninstall.sh
+
+      - name: Web lint and build
+        working-directory: web
+        run: |
+          npm ci
+          npm run lint
+          npm run build
+
+      - name: Electron TypeScript build
+        working-directory: electron
+        run: |
+          npm ci
+          npm run build:main
+
+  windows-powershell:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse PowerShell scripts
+        shell: pwsh
+        run: |
+          $files = @('bin/dk.ps1', 'install.ps1', 'reinstall.ps1', 'uninstall.ps1')
+          foreach ($file in $files) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $file), [ref]$tokens, [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error "$file`: $_" }
+              exit 1
+            }
+          }

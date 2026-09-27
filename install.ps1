@@ -53,24 +53,22 @@ $serveUrl = "https://raw.githubusercontent.com/gaoxiang89/oroio/main/bin/serve.p
 $servePath = Join-Path $INSTALL_DIR "serve.py"
 Invoke-WebRequest -Uri "$serveUrl`?ts=$ts" -OutFile $servePath -UseBasicParsing
 
+# Download shared BYOK module (for dk byok and dk serve)
+$byokUrl = "https://raw.githubusercontent.com/gaoxiang89/oroio/main/bin/byok.py"
+$byokPath = Join-Path $INSTALL_DIR "byok.py"
+Invoke-WebRequest -Uri "$byokUrl`?ts=$ts" -OutFile $byokPath -UseBasicParsing
+
 # Prepare web dashboard assets to $OROIO_DIR\web
 Write-Info "Preparing web dashboard assets..."
 $webDst = Join-Path $OROIO_DIR "web"
 if (-not (Test-Path $webDst)) { New-Item -ItemType Directory -Path $webDst -Force | Out-Null }
 
 $webBase = "https://github.com/gaoxiang89/oroio/releases/download/web-dist"
-$webFallback = "https://github.com/notdp/oroio/releases/download/web-dist"
 try {
     Invoke-WebRequest -Uri "$webBase/index.html`?ts=$ts" -OutFile (Join-Path $webDst "index.html") -UseBasicParsing
 }
 catch {
-    Write-Warn "Current web-dist is unavailable; falling back to upstream assets."
-    try {
-        Invoke-WebRequest -Uri "$webFallback/index.html`?ts=$ts" -OutFile (Join-Path $webDst "index.html") -UseBasicParsing
-    }
-    catch {
-        Write-Warn "Failed to download web assets: $($_.Exception.Message)"
-    }
+    throw "Current repository web-dist is unavailable; installation stopped."
 }
 
 # Add to PATH if not already
@@ -123,6 +121,7 @@ Write-Host ""
 Write-Success "Installation complete!"
 Write-Host ""
 Write-Host "  dk.ps1 installed to: $dkPath"
+Write-Host "  byok.py installed to: $byokPath"
 Write-Host "  Data directory: $OROIO_DIR"
 Write-Host ""
 Write-Host "To use in current session, run:" -ForegroundColor Yellow

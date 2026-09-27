@@ -3,11 +3,11 @@
   "version": "1.0.0",
   "description": "oroio Desktop - Factory Droid API Key Manager",
   "main": "dist/main/index.js",
-  "author": "notdp",
+  "author": "gaoxiang89",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/notdp/oroio.git"
+    "url": "https://github.com/gaoxiang89/oroio.git"
   },
   "scripts": {
     "dev": "concurrently \"npm run dev:main\" \"npm run dev:renderer\" \"sleep 2 && USE_DEV_SERVER=true electron .\"",

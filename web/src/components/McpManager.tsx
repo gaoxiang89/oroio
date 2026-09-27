@@ -49,7 +49,8 @@ export default function McpManager() {
   }, [loadServers]);
 
   const getServerConfig = (server: McpServer) => {
-    const { name, ...config } = server;
+    const config: Partial<McpServer> = { ...server };
+    delete config.name;
     return JSON.stringify(config, null, 2);
   };
 

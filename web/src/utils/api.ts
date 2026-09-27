@@ -452,7 +452,9 @@ export async function listCustomModels(): Promise<CustomModel[]> {
     return window.oroio.listCustomModels();
   }
   const res = await fetch('/api/byok/list', { method: 'POST', headers: getAuthHeaders() });
-  return res.json();
+  const data = await res.json();
+  if (!Array.isArray(data)) throw new Error(data.error || 'Failed to list custom models');
+  return data;
 }
 
 export async function removeCustomModel(index: number): Promise<void> {
@@ -479,6 +481,89 @@ export async function updateCustomModel(index: number, config: CustomModel): Pro
   });
   const data = await res.json();
   if (!data.success) throw new Error(data.error);
+}
+
+export interface ByokProvider {
+  id: 'glm' | 'deepseek' | 'kimi';
+  name: string;
+  description: string;
+  modelsUrl: string;
+  baseUrl: string;
+  droidProvider: 'anthropic' | 'generic-chat-completion-api';
+  configured: boolean;
+  managedModelIds: string[];
+  unavailableModelIds: string[];
+  lastDiscoveredAt?: string;
+}
+
+export interface ByokModel {
+  id: string;
+  displayName: string;
+  contextLength?: number;
+  maxOutputTokens?: number;
+  supportsImages?: boolean;
+  supportsReasoning?: boolean;
+  recommended?: boolean;
+  selected?: boolean;
+  isNew?: boolean;
+  unavailable?: boolean;
+}
+
+export interface ByokDiscovery {
+  success: true;
+  provider: string;
+  configured: boolean;
+  models: ByokModel[];
+  recommendedModelIds: string[];
+  managedModelIds: string[];
+}
+
+export interface ByokApplyResult {
+  success: true;
+  provider: string;
+  managedModelIds: string[];
+  unavailableModelIds: string[];
+  models?: ByokModel[];
+}
+
+async function byokPost<T>(path: string, body: Record<string, unknown> = {}): Promise<T> {
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (data.success === false) throw new Error(data.error || 'BYOK request failed');
+  return data as T;
+}
+
+export async function listByokProviders(): Promise<ByokProvider[]> {
+  if (isElectron) return window.oroio.listByokProviders();
+  const data = await byokPost<{ success: true; providers: ByokProvider[] }>('/api/byok/providers');
+  return data.providers;
+}
+
+export async function discoverByok(provider: string, apiKey: string): Promise<ByokDiscovery> {
+  if (isElectron) return window.oroio.discoverByok(provider, apiKey);
+  return byokPost<ByokDiscovery>('/api/byok/discover', { provider, apiKey });
+}
+
+export async function applyByok(provider: string, apiKey: string, modelIds: string[]): Promise<ByokApplyResult> {
+  if (isElectron) return window.oroio.applyByok(provider, apiKey, modelIds);
+  return byokPost<ByokApplyResult>('/api/byok/apply', { provider, apiKey, modelIds });
+}
+
+export async function refreshByokProvider(provider: string): Promise<ByokApplyResult> {
+  if (isElectron) return window.oroio.refreshByokProvider(provider);
+  return byokPost<ByokApplyResult>('/api/byok/refresh', { provider });
+}
+
+export async function removeByokProvider(provider: string): Promise<void> {
+  if (isElectron) {
+    await window.oroio.removeByokProvider(provider);
+    return;
+  }
+  await byokPost('/api/byok/remove-provider', { provider });
 }
 
 // dk CLI check (Electron only)
@@ -573,6 +658,11 @@ declare global {
       listCustomModels: () => Promise<CustomModel[]>;
       removeCustomModel: (index: number) => Promise<void>;
       updateCustomModel: (index: number, config: CustomModel) => Promise<void>;
+      listByokProviders: () => Promise<ByokProvider[]>;
+      discoverByok: (provider: string, apiKey: string) => Promise<ByokDiscovery>;
+      applyByok: (provider: string, apiKey: string, modelIds: string[]) => Promise<ByokApplyResult>;
+      refreshByokProvider: (provider: string) => Promise<ByokApplyResult>;
+      removeByokProvider: (provider: string) => Promise<{ success: true; provider: string; removedModelIds: string[] }>;
       // Utilities
       openPath: (path: string) => Promise<void>;
     };

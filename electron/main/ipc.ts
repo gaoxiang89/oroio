@@ -14,6 +14,17 @@ import {
 } from './keyManager';
 import { updateTrayMenu } from './tray';
 import { checkAndNotify } from './notifier';
+import {
+  applyProvider,
+  discoverProvider,
+  listCustomModels,
+  listProviders,
+  refreshProvider,
+  removeCustomModel,
+  removeProvider,
+  updateCustomModel,
+  type CustomModel,
+} from './byok';
 
 const OROIO_DIR = path.join(os.homedir(), '.oroio');
 const FACTORY_DIR = path.join(os.homedir(), '.factory');
@@ -42,18 +53,6 @@ interface McpServer {
   args?: string[];
   url?: string;
   env?: Record<string, string>;
-}
-
-interface CustomModel {
-  model_display_name?: string;
-  model: string;
-  base_url: string;
-  api_key: string;
-  provider: 'anthropic' | 'openai' | 'generic-chat-completion-api';
-  max_tokens?: number;
-  supports_images?: boolean;
-  extra_args?: Record<string, unknown>;
-  extra_headers?: Record<string, string>;
 }
 
 interface DkConfig {
@@ -390,52 +389,22 @@ Droid instructions here.
 
   // BYOK (Custom Models) handlers
   ipcMain.handle('byok:list', async (): Promise<CustomModel[]> => {
-    const configFile = path.join(FACTORY_DIR, 'config.json');
-    try {
-      const content = await fs.readFile(configFile, 'utf-8');
-      const config = JSON.parse(content);
-      return config.custom_models || [];
-    } catch {
-      return [];
-    }
+    return listCustomModels();
   });
 
   ipcMain.handle('byok:remove', async (_event, index: number): Promise<void> => {
-    const configFile = path.join(FACTORY_DIR, 'config.json');
-    try {
-      const content = await fs.readFile(configFile, 'utf-8');
-      const config = JSON.parse(content);
-      if (config.custom_models && index >= 0 && index < config.custom_models.length) {
-        config.custom_models.splice(index, 1);
-        await fs.writeFile(configFile, JSON.stringify(config, null, 2));
-      }
-    } catch {
-      // Config doesn't exist or is invalid
-    }
+    await removeCustomModel(index);
   });
 
   ipcMain.handle('byok:update', async (_event, index: number, modelConfig: CustomModel): Promise<void> => {
-    const configFile = path.join(FACTORY_DIR, 'config.json');
-    let config: { custom_models?: CustomModel[]; [key: string]: unknown } = {};
-    try {
-      const content = await fs.readFile(configFile, 'utf-8');
-      config = JSON.parse(content);
-    } catch {
-      // File doesn't exist or is invalid
-    }
-    if (!config.custom_models) {
-      config.custom_models = [];
-    }
-    if (index === -1) {
-      // Add new model
-      config.custom_models.push(modelConfig);
-    } else if (index >= 0 && index < config.custom_models.length) {
-      // Update existing model
-      config.custom_models[index] = modelConfig;
-    }
-    await fs.mkdir(FACTORY_DIR, { recursive: true });
-    await fs.writeFile(configFile, JSON.stringify(config, null, 2));
+    await updateCustomModel(index, modelConfig);
   });
+
+  ipcMain.handle('byok:providers', async () => listProviders());
+  ipcMain.handle('byok:discover', async (_event, provider: string, apiKey: string) => discoverProvider(provider, apiKey));
+  ipcMain.handle('byok:apply', async (_event, provider: string, apiKey: string, modelIds: string[]) => applyProvider(provider, apiKey, modelIds));
+  ipcMain.handle('byok:refresh-provider', async (_event, provider: string) => refreshProvider(provider));
+  ipcMain.handle('byok:remove-provider', async (_event, provider: string) => removeProvider(provider));
 
   // Utility handlers
   ipcMain.handle('util:openPath', async (_event, filePath: string): Promise<void> => {

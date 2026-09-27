@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, Plus, Trash2, Cpu, Copy, Check, Pencil, ChevronRight, ChevronDown, Eye, EyeOff, Brain, AlertCircle, X } from 'lucide-react';
+import { RefreshCw, Plus, Trash2, Cpu, Copy, Check, Pencil, ChevronRight, ChevronDown, Eye, EyeOff, Brain, AlertCircle, X, KeyRound } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -23,7 +23,19 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { listCustomModels, removeCustomModel, updateCustomModel, type CustomModel } from '@/utils/api';
+import {
+  applyByok,
+  discoverByok,
+  listByokProviders,
+  listCustomModels,
+  refreshByokProvider,
+  removeByokProvider,
+  removeCustomModel,
+  updateCustomModel,
+  type ByokDiscovery,
+  type ByokProvider,
+  type CustomModel,
+} from '@/utils/api';
 import { toast } from 'sonner';
 
 function showError(message: string) {
@@ -184,6 +196,7 @@ function formToModel(form: FormState): CustomModel {
 
 export default function ByokManager() {
   const [models, setModels] = useState<CustomModel[]>([]);
+  const [quickProviders, setQuickProviders] = useState<ByokProvider[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedModel, setExpandedModel] = useState<number | null>(null);
@@ -195,13 +208,22 @@ export default function ByokManager() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [form, setForm] = useState<FormState>(DEFAULT_FORM);
+  const [quickDialogOpen, setQuickDialogOpen] = useState(false);
+  const [quickProvider, setQuickProvider] = useState<ByokProvider | null>(null);
+  const [quickStage, setQuickStage] = useState<'key' | 'models'>('key');
+  const [quickKey, setQuickKey] = useState('');
+  const [quickDiscovery, setQuickDiscovery] = useState<ByokDiscovery | null>(null);
+  const [selectedModelIds, setSelectedModelIds] = useState<Set<string>>(new Set());
+  const [quickBusy, setQuickBusy] = useState(false);
+  const [providerToRemove, setProviderToRemove] = useState<ByokProvider | null>(null);
 
   const loadModels = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
-      const result = await listCustomModels();
-      setModels(result);
+      const [modelResult, providerResult] = await Promise.all([listCustomModels(), listByokProviders()]);
+      setModels(modelResult);
+      setQuickProviders(providerResult);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load custom models');
     } finally {
@@ -240,6 +262,107 @@ export default function ByokManager() {
     setForm(DEFAULT_FORM);
     setEditingIndex(null);
     setDialogOpen(true);
+  };
+
+  const openQuickSetup = (provider: ByokProvider) => {
+    setQuickProvider(provider);
+    setQuickStage('key');
+    setQuickKey('');
+    setQuickDiscovery(null);
+    setSelectedModelIds(new Set());
+    setQuickDialogOpen(true);
+  };
+
+  const closeQuickDialog = () => {
+    setQuickDialogOpen(false);
+    setQuickKey('');
+    setQuickDiscovery(null);
+    setSelectedModelIds(new Set());
+  };
+
+  const handleQuickDiscover = async () => {
+    if (!quickProvider || !quickKey.trim()) {
+      showError('Enter an API key');
+      return;
+    }
+    try {
+      setQuickBusy(true);
+      const result = await discoverByok(quickProvider.id, quickKey);
+      setQuickDiscovery(result);
+      setSelectedModelIds(new Set(result.models.filter(model => model.selected).map(model => model.id)));
+      setQuickStage('models');
+    } catch (err) {
+      showError(err instanceof Error ? err.message : 'Failed to discover models');
+    } finally {
+      setQuickBusy(false);
+    }
+  };
+
+  const handleQuickRefresh = async (provider: ByokProvider) => {
+    try {
+      setQuickBusy(true);
+      const result = await refreshByokProvider(provider.id);
+      const discovered: ByokDiscovery = {
+        success: true,
+        provider: provider.id,
+        configured: true,
+        models: result.models || [],
+        recommendedModelIds: [],
+        managedModelIds: result.managedModelIds,
+      };
+      if (!discovered.models.length) throw new Error('The provider returned no usable models');
+      setQuickProvider(provider);
+      setQuickKey('');
+      setQuickDiscovery(discovered);
+      setSelectedModelIds(new Set(discovered.models.filter(model => model.selected).map(model => model.id)));
+      setQuickStage('models');
+      setQuickDialogOpen(true);
+      await loadModels();
+    } catch (err) {
+      showError(err instanceof Error ? err.message : 'Failed to refresh provider');
+    } finally {
+      setQuickBusy(false);
+    }
+  };
+
+  const handleQuickApply = async () => {
+    if (!quickProvider || selectedModelIds.size === 0) {
+      showError('Select at least one model');
+      return;
+    }
+    try {
+      setQuickBusy(true);
+      await applyByok(quickProvider.id, quickKey, [...selectedModelIds]);
+      closeQuickDialog();
+      await loadModels();
+      toast.success(`${quickProvider.name} configured`);
+    } catch (err) {
+      showError(err instanceof Error ? err.message : 'Failed to apply provider');
+    } finally {
+      setQuickBusy(false);
+    }
+  };
+
+  const toggleQuickModel = (modelId: string) => {
+    setSelectedModelIds(previous => {
+      const next = new Set(previous);
+      if (next.has(modelId)) next.delete(modelId); else next.add(modelId);
+      return next;
+    });
+  };
+
+  const handleRemoveProvider = async () => {
+    if (!providerToRemove) return;
+    try {
+      setQuickBusy(true);
+      await removeByokProvider(providerToRemove.id);
+      setProviderToRemove(null);
+      await loadModels();
+    } catch (err) {
+      showError(err instanceof Error ? err.message : 'Failed to remove provider');
+    } finally {
+      setQuickBusy(false);
+    }
   };
 
   const openEditDialog = (model: CustomModel, index: number) => {
@@ -324,6 +447,60 @@ export default function ByokManager() {
 
   return (
     <div className="space-y-6">
+      <section className="space-y-3">
+        <div>
+          <h2 className="text-sm font-semibold uppercase tracking-wider">Official providers</h2>
+          <p className="text-xs text-muted-foreground mt-1">Choose a provider, validate your key, then select the models Droid should use.</p>
+        </div>
+        <div className="grid gap-3 md:grid-cols-3">
+          {quickProviders.map(provider => (
+            <div key={provider.id} className="border border-border bg-card p-4 flex flex-col gap-3 min-h-44">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="h-8 w-8 border border-border flex items-center justify-center shrink-0">
+                    <KeyRound className="h-4 w-4 text-primary" />
+                  </div>
+                  <div className="min-w-0">
+                    <h3 className="text-sm font-semibold truncate">{provider.name}</h3>
+                    <span className="text-[10px] uppercase tracking-wider text-muted-foreground">{provider.id}</span>
+                  </div>
+                </div>
+                <Badge variant={provider.configured ? 'default' : 'outline'} className="text-[10px]">
+                  {provider.configured ? 'Configured' : 'Not set'}
+                </Badge>
+              </div>
+              <p className="text-xs text-muted-foreground leading-relaxed flex-1">{provider.description}</p>
+              {provider.configured && (
+                <div className="text-[10px] text-muted-foreground truncate" title={provider.managedModelIds.join(', ')}>
+                  {provider.managedModelIds.length} model{provider.managedModelIds.length === 1 ? '' : 's'}
+                  {provider.unavailableModelIds.length > 0 && <span className="text-amber-600"> · {provider.unavailableModelIds.length} unavailable</span>}
+                </div>
+              )}
+              <div className="flex gap-2">
+                <Button size="sm" className="h-8 text-xs flex-1" onClick={() => openQuickSetup(provider)} disabled={quickBusy}>
+                  {provider.configured ? 'Replace key / Edit' : 'Set up'}
+                </Button>
+                {provider.configured && (
+                  <>
+                    <Button variant="outline" size="icon" className="h-8 w-8" title="Refresh models" onClick={() => handleQuickRefresh(provider)} disabled={quickBusy}>
+                      <RefreshCw className={`h-3.5 w-3.5 ${quickBusy ? 'animate-spin' : ''}`} />
+                    </Button>
+                    <Button variant="outline" size="icon" className="h-8 w-8 text-destructive" title="Remove provider" onClick={() => setProviderToRemove(provider)} disabled={quickBusy}>
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <div className="border-t border-border pt-5">
+        <h2 className="text-sm font-semibold uppercase tracking-wider">Advanced custom models</h2>
+        <p className="text-xs text-muted-foreground mt-1">Manually configure any Droid-compatible endpoint.</p>
+      </div>
+
       <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div className="flex flex-wrap items-center gap-2">
           <div className="px-3 py-1.5 border border-border bg-card flex items-center gap-2">
@@ -365,7 +542,7 @@ export default function ByokManager() {
           <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
             <Cpu className="h-10 w-10 mb-3 opacity-40" />
             <p className="text-sm">No custom models configured</p>
-            <p className="text-xs text-muted-foreground/70">~/.factory/config.json</p>
+            <p className="text-xs text-muted-foreground/70">~/.factory/settings.json</p>
           </div>
         ) : (
           <div className="divide-y">
@@ -453,6 +630,95 @@ export default function ByokManager() {
           </div>
         )}
       </div>
+
+      {/* Official provider setup */}
+      <Dialog open={quickDialogOpen} onOpenChange={(open) => open ? setQuickDialogOpen(true) : closeQuickDialog()}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{quickProvider?.name}</DialogTitle>
+            <DialogDescription>
+              {quickStage === 'key'
+                ? 'Your key is validated directly against the provider and stored only in your local Droid settings.'
+                : 'Select the models to manage. Unavailable models stay selected until you explicitly remove them.'}
+            </DialogDescription>
+          </DialogHeader>
+
+          {quickStage === 'key' ? (
+            <div className="space-y-4 py-2">
+              {quickProvider?.configured && (
+                <div className="border border-amber-500/50 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
+                  Continuing replaces the API key for every model managed by this provider.
+                </div>
+              )}
+              <div className="space-y-2">
+                <Label htmlFor="official_api_key">API Key</Label>
+                <Input
+                  id="official_api_key"
+                  type="password"
+                  autoComplete="off"
+                  placeholder="Paste provider API key"
+                  value={quickKey}
+                  onChange={event => setQuickKey(event.target.value)}
+                  onKeyDown={event => event.key === 'Enter' && handleQuickDiscover()}
+                />
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-2 py-2">
+              {quickDiscovery?.models.map(model => {
+                const checked = selectedModelIds.has(model.id);
+                return (
+                  <button
+                    type="button"
+                    role="checkbox"
+                    aria-checked={checked}
+                    key={model.id}
+                    onClick={() => toggleQuickModel(model.id)}
+                    className={`w-full border p-3 text-left flex gap-3 transition-colors ${model.isNew ? 'border-primary/70 bg-primary/5' : 'border-border'} ${checked ? 'bg-muted/60' : 'hover:bg-muted/30'}`}
+                  >
+                    <span className={`mt-0.5 h-4 w-4 border flex items-center justify-center shrink-0 ${checked ? 'bg-primary border-primary text-primary-foreground' : 'border-border'}`}>
+                      {checked && <Check className="h-3 w-3" />}
+                    </span>
+                    <span className="flex-1 min-w-0">
+                      <span className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-medium">{model.displayName}</span>
+                        {model.recommended && <Badge className="text-[10px]">Recommended</Badge>}
+                        {model.isNew && <Badge variant="secondary" className="text-[10px]">New</Badge>}
+                        {model.unavailable && <Badge variant="outline" className="text-[10px] text-amber-600 border-amber-500/50">Unavailable</Badge>}
+                        {model.supportsReasoning && <Badge variant="outline" className="text-[10px]">Reasoning</Badge>}
+                        {model.supportsImages && <Badge variant="outline" className="text-[10px]">Vision</Badge>}
+                      </span>
+                      <span className="block text-[11px] text-muted-foreground mt-1 break-all">
+                        {model.id}
+                        {model.contextLength && ` · ${model.contextLength.toLocaleString()} context`}
+                        {model.maxOutputTokens && ` · ${model.maxOutputTokens.toLocaleString()} output`}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={closeQuickDialog} disabled={quickBusy}>Cancel</Button>
+            {quickStage === 'key' ? (
+              <Button onClick={handleQuickDiscover} disabled={quickBusy || !quickKey.trim()}>
+                {quickBusy && <RefreshCw className="h-3.5 w-3.5 mr-2 animate-spin" />}
+                Validate & fetch models
+              </Button>
+            ) : (
+              <>
+                {quickKey && <Button variant="outline" onClick={() => setQuickStage('key')} disabled={quickBusy}>Back</Button>}
+                <Button onClick={handleQuickApply} disabled={quickBusy || selectedModelIds.size === 0}>
+                  {quickBusy && <RefreshCw className="h-3.5 w-3.5 mr-2 animate-spin" />}
+                  Apply {selectedModelIds.size} model{selectedModelIds.size === 1 ? '' : 's'}
+                </Button>
+              </>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Add/Edit Dialog */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
@@ -613,6 +879,23 @@ export default function ByokManager() {
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={handleDelete} className="bg-destructive hover:bg-destructive/90">
               Remove
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={providerToRemove !== null} onOpenChange={(open) => !open && setProviderToRemove(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove {providerToRemove?.name}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This removes only the models managed through this official provider shortcut. Other custom models are preserved.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleRemoveProvider} className="bg-destructive hover:bg-destructive/90">
+              Remove provider
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

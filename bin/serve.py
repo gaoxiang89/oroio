@@ -14,6 +14,8 @@ import urllib.request
 import urllib.error
 from urllib.parse import unquote, urlsplit, urlunsplit
 
+import byok as byok_core
+
 SALT = b"oroio"
 VALID_TOKENS = set()  # In-memory token storage
 PIN_HASH = None  # Will be set on startup
@@ -538,6 +540,16 @@ class OroioHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_remove_byok(data)
         elif path == '/api/byok/update':
             self.handle_update_byok(data)
+        elif path == '/api/byok/providers':
+            self.handle_byok_providers()
+        elif path == '/api/byok/discover':
+            self.handle_byok_discover(data)
+        elif path == '/api/byok/apply':
+            self.handle_byok_apply(data)
+        elif path == '/api/byok/refresh':
+            self.handle_byok_refresh(data)
+        elif path == '/api/byok/remove-provider':
+            self.handle_byok_remove_provider(data)
         # DK config
         elif path == '/api/dk/config':
             self.handle_dk_config(data)
@@ -966,26 +978,11 @@ class OroioHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({'success': False, 'error': str(e)})
     
     # BYOK (Custom Models) handlers
-    def _get_factory_config(self):
-        """Read ~/.factory/config.json"""
-        config_file = os.path.join(FACTORY_DIR, 'config.json')
-        try:
-            with open(config_file, 'r') as f:
-                return json.load(f)
-        except:
-            return {}
-    
-    def _save_factory_config(self, config):
-        """Write ~/.factory/config.json"""
-        config_file = os.path.join(FACTORY_DIR, 'config.json')
-        os.makedirs(FACTORY_DIR, exist_ok=True)
-        with open(config_file, 'w') as f:
-            json.dump(config, f, indent=2)
-    
     def handle_list_byok(self):
-        config = self._get_factory_config()
-        models = config.get('custom_models', [])
-        self.send_json(models)
+        try:
+            self.send_json(byok_core.list_custom_models(FACTORY_DIR))
+        except byok_core.ByokError as error:
+            self.send_json(error.as_dict())
     
     def handle_remove_byok(self, data):
         index = data.get('index')
@@ -993,18 +990,12 @@ class OroioHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({'success': False, 'error': 'Index is required'})
             return
         try:
-            config = self._get_factory_config()
-            models = config.get('custom_models', [])
-            idx = int(index)
-            if idx < 0 or idx >= len(models):
-                self.send_json({'success': False, 'error': 'Index out of range'})
-                return
-            models.pop(idx)
-            config['custom_models'] = models
-            self._save_factory_config(config)
+            byok_core.remove_custom_model(int(index), FACTORY_DIR)
             self.send_json({'success': True})
-        except Exception as e:
-            self.send_json({'success': False, 'error': str(e)})
+        except byok_core.ByokError as error:
+            self.send_json(error.as_dict())
+        except (TypeError, ValueError):
+            self.send_json({'success': False, 'error': 'Index must be a number'})
     
     def handle_update_byok(self, data):
         index = data.get('index')
@@ -1013,22 +1004,65 @@ class OroioHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({'success': False, 'error': 'Config is required'})
             return
         try:
-            config = self._get_factory_config()
-            models = config.get('custom_models', [])
-            if index is None or int(index) < 0:
-                # Add new model (index is None or -1)
-                models.append(model_config)
-            else:
-                idx = int(index)
-                if idx >= len(models):
-                    self.send_json({'success': False, 'error': 'Index out of range'})
-                    return
-                models[idx] = model_config
-            config['custom_models'] = models
-            self._save_factory_config(config)
+            byok_core.update_custom_model(-1 if index is None else int(index), model_config, FACTORY_DIR)
             self.send_json({'success': True})
-        except Exception as e:
-            self.send_json({'success': False, 'error': str(e)})
+        except byok_core.ByokError as error:
+            self.send_json(error.as_dict())
+        except (TypeError, ValueError):
+            self.send_json({'success': False, 'error': 'Index must be a number'})
+
+    def handle_byok_providers(self):
+        try:
+            self.send_json({'success': True, 'providers': byok_core.list_providers(FACTORY_DIR, self.oroio_dir)})
+        except byok_core.ByokError as error:
+            self.send_json(error.as_dict())
+
+    def handle_byok_discover(self, data):
+        try:
+            result = byok_core.discover(
+                str(data.get('provider', '')),
+                str(data.get('apiKey', '')),
+                FACTORY_DIR,
+                self.oroio_dir,
+            )
+            self.send_json(result)
+        except byok_core.ByokError as error:
+            self.send_json(error.as_dict())
+
+    def handle_byok_apply(self, data):
+        try:
+            result = byok_core.apply(
+                str(data.get('provider', '')),
+                str(data.get('apiKey', '')),
+                data.get('modelIds', []),
+                FACTORY_DIR,
+                self.oroio_dir,
+            )
+            self.send_json(result)
+        except byok_core.ByokError as error:
+            self.send_json(error.as_dict())
+
+    def handle_byok_refresh(self, data):
+        try:
+            result = byok_core.refresh(
+                str(data.get('provider', '')),
+                FACTORY_DIR,
+                self.oroio_dir,
+            )
+            self.send_json(result)
+        except byok_core.ByokError as error:
+            self.send_json(error.as_dict())
+
+    def handle_byok_remove_provider(self, data):
+        try:
+            result = byok_core.remove_provider(
+                str(data.get('provider', '')),
+                FACTORY_DIR,
+                self.oroio_dir,
+            )
+            self.send_json(result)
+        except byok_core.ByokError as error:
+            self.send_json(error.as_dict())
     
     def handle_dk_config(self, data):
         """Get or set dk config (key=value format, same as dk CLI)"""

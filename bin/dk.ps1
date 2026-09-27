@@ -42,6 +42,8 @@ Commands:
   current                show current key + export + clipboard
   use [index]            switch key (interactive if no index)
   serve [start|stop|status]  web dashboard (default: start, port 7758)
+  byok setup [glm|deepseek|kimi]  configure an official BYOK provider
+  byok list|refresh [provider]|remove <provider>
   run <cmd...>           run with key (auto-rotate on zero balance)
   rm <index...>          remove keys
   reinstall              update to latest version
@@ -1222,6 +1224,17 @@ function Cmd-Reinstall {
     Invoke-Expression (Invoke-WebRequest -Uri "https://raw.githubusercontent.com/gaoxiang89/oroio/main/install.ps1?ts=$ts" -UseBasicParsing).Content
 }
 
+function Cmd-Byok {
+    param([string[]]$ByokArgs)
+
+    $dkDir = if ($script:DK_DIR) { $script:DK_DIR } else { Split-Path $script:DK_PATH -Parent }
+    $byokScript = Join-Path $dkDir "byok.py"
+    if (-not (Test-Path $byokScript)) { Write-ErrorExit "未找到 byok.py，请重新安装 dk" }
+    $python = Get-Python
+    & $python $byokScript @ByokArgs
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+
 function Cmd-Uninstall {
     Write-Host "正在卸载 dk..."
     $ts = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
@@ -1239,6 +1252,7 @@ switch ($Command) {
     "use" { Cmd-Use -UseArgs $Arguments }
     "run" { Cmd-Run -RunArgs $Arguments }
     "serve" { Cmd-Serve -ServeArgs $Arguments }
+    "byok" { Cmd-Byok -ByokArgs $Arguments }
     "rm" { Cmd-Remove -RmArgs $Arguments }
     "remove" { Cmd-Remove -RmArgs $Arguments }
     "del" { Cmd-Remove -RmArgs $Arguments }

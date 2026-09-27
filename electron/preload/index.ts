@@ -38,6 +38,49 @@ export interface CustomModel {
   extra_headers?: Record<string, string>;
 }
 
+export interface ByokProvider {
+  id: 'glm' | 'deepseek' | 'kimi';
+  name: string;
+  description: string;
+  modelsUrl: string;
+  baseUrl: string;
+  droidProvider: 'anthropic' | 'generic-chat-completion-api';
+  configured: boolean;
+  managedModelIds: string[];
+  unavailableModelIds: string[];
+  lastDiscoveredAt?: string;
+}
+
+export interface ByokModel {
+  id: string;
+  displayName: string;
+  contextLength?: number;
+  maxOutputTokens?: number;
+  supportsImages?: boolean;
+  supportsReasoning?: boolean;
+  recommended?: boolean;
+  selected?: boolean;
+  isNew?: boolean;
+  unavailable?: boolean;
+}
+
+export interface ByokDiscovery {
+  success: true;
+  provider: string;
+  configured: boolean;
+  models: ByokModel[];
+  recommendedModelIds: string[];
+  managedModelIds: string[];
+}
+
+export interface ByokApplyResult {
+  success: true;
+  provider: string;
+  managedModelIds: string[];
+  unavailableModelIds: string[];
+  models?: ByokModel[];
+}
+
 export interface DkCheckResult {
   installed: boolean;
   installCmd: string;
@@ -92,6 +135,11 @@ export interface OroioAPI {
   listCustomModels: () => Promise<CustomModel[]>;
   removeCustomModel: (index: number) => Promise<void>;
   updateCustomModel: (index: number, config: CustomModel) => Promise<void>;
+  listByokProviders: () => Promise<ByokProvider[]>;
+  discoverByok: (provider: string, apiKey: string) => Promise<ByokDiscovery>;
+  applyByok: (provider: string, apiKey: string, modelIds: string[]) => Promise<ByokApplyResult>;
+  refreshByokProvider: (provider: string) => Promise<ByokApplyResult>;
+  removeByokProvider: (provider: string) => Promise<{ success: true; provider: string; removedModelIds: string[] }>;
   // Utilities
   openPath: (path: string) => Promise<void>;
 }
@@ -149,6 +197,11 @@ const api: OroioAPI = {
   listCustomModels: () => ipcRenderer.invoke('byok:list'),
   removeCustomModel: (index: number) => ipcRenderer.invoke('byok:remove', index),
   updateCustomModel: (index: number, config: CustomModel) => ipcRenderer.invoke('byok:update', index, config),
+  listByokProviders: () => ipcRenderer.invoke('byok:providers'),
+  discoverByok: (provider: string, apiKey: string) => ipcRenderer.invoke('byok:discover', provider, apiKey),
+  applyByok: (provider: string, apiKey: string, modelIds: string[]) => ipcRenderer.invoke('byok:apply', provider, apiKey, modelIds),
+  refreshByokProvider: (provider: string) => ipcRenderer.invoke('byok:refresh-provider', provider),
+  removeByokProvider: (provider: string) => ipcRenderer.invoke('byok:remove-provider', provider),
   // Utilities
   openPath: (p: string) => ipcRenderer.invoke('util:openPath', p),
 };

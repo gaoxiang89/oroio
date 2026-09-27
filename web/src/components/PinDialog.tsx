@@ -11,19 +11,11 @@ interface PinDialogProps {
 export default function PinDialog({ onSubmit, error }: PinDialogProps) {
   const [pin, setPin] = useState(['', '', '', '']);
   const [loading, setLoading] = useState(false);
-  const [shake, setShake] = useState(false);
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   useEffect(() => {
     inputRefs.current[0]?.focus();
   }, []);
-
-  useEffect(() => {
-    if (error) {
-      setShake(true);
-      setTimeout(() => setShake(false), 500);
-    }
-  }, [error]);
 
   const handleChange = (index: number, value: string) => {
     if (!/^\d*$/.test(value)) return;
@@ -85,7 +77,7 @@ export default function PinDialog({ onSubmit, error }: PinDialogProps) {
         <div 
           className={cn(
             "flex justify-center gap-3",
-            shake && "animate-shake"
+            error && "animate-shake"
           )}
           onPaste={handlePaste}
         >

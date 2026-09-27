@@ -96,6 +96,14 @@ main() {
     summary+=("未在 $prefix 找到 serve.py (跳过)")
   fi
 
+  local byok_path="$prefix/byok.py"
+  if [ -e "$byok_path" ]; then
+    rm -f "$byok_path"
+    summary+=("已移除 $byok_path")
+  else
+    summary+=("未在 $prefix 找到 byok.py (跳过)")
+  fi
+
   local oroio_dir="$HOME/.oroio"
   if [ -d "$oroio_dir" ]; then
     # 保留 keys.enc，清理其他文件

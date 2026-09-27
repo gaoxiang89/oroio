@@ -70,11 +70,42 @@ Here's what `dk list` looks like:
 | `dk rm <n...>`         | Remove keys by index                        |
 | `dk run <cmd>`         | Run command with current key (auto-rotates) |
 | `dk serve`             | Start web dashboard on port 7758            |
+| `dk byok setup [provider]` | Configure GLM, DeepSeek, or Kimi interactively |
+| `dk byok list`         | List official BYOK provider configurations  |
+| `dk byok refresh [provider]` | Refresh models using the saved key      |
+| `dk byok remove <provider>` | Remove models managed for one provider  |
 | `dk config`            | Configure CLI options (border style, etc.)  |
 | `dk reinstall`         | Update to latest version                    |
 | `dk uninstall`         | Remove dk                                   |
 
 > **Security warning**: Exported files contain plaintext API keys. Store them securely, never commit them to Git, and delete them after importing. On macOS/Linux, exported files are automatically set to mode `0600`.
+
+## Official provider BYOK
+
+oroio provides guided setup for three official endpoints:
+
+| Shortcut | Model discovery | Droid runtime |
+| --- | --- | --- |
+| GLM Coding Plan | `open.bigmodel.cn/api/coding/paas/v4/models` | Anthropic-compatible GLM endpoint |
+| DeepSeek API | `api.deepseek.com/models` | Official Anthropic-compatible endpoint |
+| Kimi Code Plan | `api.kimi.com/coding/v1/models` | OpenAI Chat Completions-compatible endpoint |
+
+Run the hidden-input setup wizard, then select models by number or range:
+
+```bash
+dk byok setup glm
+dk byok setup deepseek
+dk byok setup kimi
+dk byok list
+dk byok refresh glm
+dk byok remove glm
+```
+
+The same guided cards are available on the Web dashboard and in the desktop app. Setup validates the key against the provider's official model endpoint before changing any local config. A refresh keeps currently managed models selected, highlights newly discovered models without selecting them, and retains upstream models marked unavailable until you explicitly deselect them or remove the provider.
+
+New entries are written to Droid's current `~/.factory/settings.json` `customModels` format. Existing legacy entries in `~/.factory/config.json` remain in that file when edited. oroio preserves unrelated settings and records only management metadata in `~/.oroio/byok.json`; it does not duplicate the API key there.
+
+> **Local key warning:** Droid needs the provider key at runtime, so these BYOK keys are stored as plaintext in your local Factory settings. The files are set to `0600` on POSIX systems, but anyone or any process that can read your account files can read the keys. Never commit either Factory settings file.
 
 ## Web Dashboard
 
@@ -92,7 +123,7 @@ Access at `http://localhost:7758` to view and manage keys visually.
 
 A standalone desktop app is available for macOS, Windows, and Linux. It provides the same dashboard experience with system tray integration and low-balance notifications.
 
-Download from [Releases](https://github.com/notdp/oroio/releases/tag/electron-dist).
+Download from [Releases](https://github.com/gaoxiang89/oroio/releases/tag/electron-dist).
 
 > **macOS**: After installing, run `xattr -cr /Applications/oroio.app` to bypass Gatekeeper (app is unsigned).
 >
@@ -106,11 +137,13 @@ Download from [Releases](https://github.com/notdp/oroio/releases/tag/electron-di
 
 **macOS / Linux:**
 - Binary: `~/.local/bin/dk`
+- BYOK helper: `~/.local/bin/byok.py`
 - Data: `~/.oroio/`
 - Shell alias: `droid` → `dk run droid`
 
 **Windows:**
 - Script: `%LOCALAPPDATA%\oroio\bin\dk.ps1`
+- BYOK helper: `%LOCALAPPDATA%\oroio\bin\byok.py`
 - Data: `%USERPROFILE%\.oroio\`
 - PowerShell function: `droid` → `dk run droid`
 

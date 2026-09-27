@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Trash2, Plus, RefreshCw, Terminal, CheckCircle2, Copy, Circle, X, AlertTriangle, Download, Upload, ArrowUp, ArrowDown, ChevronsUpDown, Pencil } from 'lucide-react';
+import { Trash2, Plus, RefreshCw, Terminal, CheckCircle2, Copy, Circle, X, AlertTriangle, Download, Upload, ArrowUp, ArrowDown, ChevronsUpDown, Pencil, type LucideIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import { sounds } from '@/lib/sound';
 import { decryptKeys, maskKey } from '@/utils/crypto';
-import { fetchEncryptedKeys, fetchCurrentIndex, fetchCache, addKey, removeKey, useKey, refreshCache, isElectron, checkDk } from '@/utils/api';
+import { fetchEncryptedKeys, fetchCurrentIndex, fetchCache, addKey, removeKey, useKey as activateKey, refreshCache, isElectron, checkDk } from '@/utils/api';
 import type { KeyInfo } from '@/utils/api';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -198,7 +198,7 @@ function NoteCell({ keyText, onUpdate }: { keyText: string; onUpdate: () => void
   );
 }
 
-function IconCopyButton({ text, icon: Icon, title, className }: { text: string; icon: any; title: string; className?: string }) {
+function IconCopyButton({ text, icon: Icon, title, className }: { text: string; icon: LucideIcon; title: string; className?: string }) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
@@ -444,7 +444,7 @@ export default function KeyList() {
   };
 
   const handleUseKey = async (index: number) => {
-    const result = await useKey(index);
+    const result = await activateKey(index);
     if (result.success) {
       sounds.switch();
       await loadData(true);

@@ -32,6 +32,7 @@ path_has() {
 DK_TMPDIR=""
 DK_SRC=""
 SERVE_SRC=""
+BYOK_SRC=""
 WEB_DIR=""
 
 make_tmpdir() {
@@ -62,22 +63,18 @@ fetch_web_assets() {
   install -d "$WEB_DIR"
 
   local base="https://github.com/gaoxiang89/oroio/releases/download/web-dist"
-  local fallback="https://github.com/notdp/oroio/releases/download/web-dist"
   local ts
   ts=$(date +%s)
   printf '正在下载 web 资源...\n'
-  if ! curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "${base}/index.html?ts=${ts}" \
-    -o "$WEB_DIR/index.html"; then
-    printf '当前仓库的 web-dist 尚不可用，回退到上游资源...\n'
-    curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "${fallback}/index.html?ts=${ts}" \
-      -o "$WEB_DIR/index.html" || die "下载 index.html 失败"
-  fi
+  curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "${base}/index.html?ts=${ts}" \
+    -o "$WEB_DIR/index.html" || die "当前仓库的 web-dist 不可用，安装已停止"
 }
 
 locate_sources() {
   local base="https://raw.githubusercontent.com/gaoxiang89/oroio/main/bin"
   fetch_component "dk" "$base/dk" DK_SRC
   fetch_component "serve.py" "$base/serve.py" SERVE_SRC
+  fetch_component "byok.py" "$base/byok.py" BYOK_SRC
   fetch_web_assets
 }
 
@@ -142,6 +139,7 @@ main() {
   install -d "$prefix"
   install -m 0755 "$DK_SRC" "$prefix/dk"
   install -m 0755 "$SERVE_SRC" "$prefix/serve.py"
+  install -m 0755 "$BYOK_SRC" "$prefix/byok.py"
 
   local oroio_dir="$HOME/.oroio"
   local web_dest="$oroio_dir/web"
@@ -158,6 +156,7 @@ main() {
   printf '\n安装完成:\n'
   printf '  - 已将 dk 安装到 %s/dk\n' "$prefix"
   printf '  - 已将 serve.py 安装到 %s/serve.py\n' "$prefix"
+  printf '  - 已将 byok.py 安装到 %s/byok.py\n' "$prefix"
   printf '  - 已将 web 资源安装到 %s\n' "$web_dest"
   if ! path_has "$prefix"; then
     printf '  - 注意: %s 不在 PATH，请手动加入后再使用。\n' "$prefix"

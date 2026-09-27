@@ -85,6 +85,8 @@ Commands:
   use [index]            switch key (interactive if no index)
   run <cmd...>           run with key (auto-rotate on zero balance)
   serve [start|stop|status]  web dashboard (default: start, port 7758)
+  byok setup [glm|deepseek|kimi]  configure an official BYOK provider
+  byok list|refresh [provider]|remove <provider>
   config                 interactive configuration menu
   uninstall [options]    uninstall dk (wrapper around uninstall.sh)
   reinstall [options]    reinstall dk (wrapper around reinstall.sh)
@@ -1825,6 +1827,15 @@ cmd_config() {
   esac
 }
 
+cmd_byok() {
+  check_python3
+  local script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local byok_script="$script_dir/byok.py"
+  [ -f "$byok_script" ] || die "未找到 byok.py，请重新安装 dk"
+  python3 "$byok_script" "$@"
+}
+
 main() {
   local cmd="${1:-help}"; shift || true
   case "$cmd" in
@@ -1836,6 +1847,7 @@ main() {
     use) cmd_use "$@";;
     run) check_python3; cmd_run "$@";;
     serve) cmd_serve "$@";;
+    byok) cmd_byok "$@";;
     config) cmd_config "$@";;
     rm|remove|del) cmd_rm "$@";;
     uninstall) cmd_uninstall "$@";;
