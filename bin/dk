@@ -78,6 +78,8 @@ usage() {
 Usage: dk <command> [args]
 Commands:
   add <key...>           add keys (or --file <path>)
+  import <path>          import keys from a plaintext file
+  export [--force] <path>  export all keys to a plaintext file
   list                   list keys with balance/expiry
   current                show current key + export + clipboard
   use [index]            switch key (interactive if no index)
@@ -943,6 +945,85 @@ cmd_add() {
   echo "${msg}。当前共有 ${#KEYS[@]} 个key。"
 }
 
+cmd_import() {
+  if [[ $# -ne 1 ]]; then
+    die "用法: dk import <文件>"
+  fi
+  cmd_add --file "$1"
+}
+
+cmd_export() {
+  local force=0 file=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -f|--force) force=1; shift ;;
+      --)
+        shift
+        [[ $# -eq 1 ]] || die "用法: dk export [--force] <文件>"
+        file="$1"
+        shift
+        ;;
+      -*) die "未知选项: $1" ;;
+      *)
+        [[ -z "$file" ]] || die "用法: dk export [--force] <文件>"
+        file="$1"
+        shift
+        ;;
+    esac
+  done
+  [[ -n "$file" ]] || die "用法: dk export [--force] <文件>"
+
+  ensure_store
+
+  local parent base canonical_file canonical_store
+  parent=$(dirname -- "$file")
+  base=$(basename -- "$file")
+  [[ -d "$parent" ]] || die "目录不存在: $parent"
+  canonical_file="$(cd "$parent" && pwd -P)/$base"
+  canonical_store="$(cd "$(dirname -- "$KEYS_ENC_FILE")" && pwd -P)/$(basename -- "$KEYS_ENC_FILE")"
+  if [[ "$canonical_file" == "$canonical_store" ]] || [[ -e "$file" && "$file" -ef "$KEYS_ENC_FILE" ]]; then
+    die "不能导出到加密存储文件: $KEYS_ENC_FILE"
+  fi
+  [[ ! -L "$file" ]] || die "不支持导出到符号链接: $file"
+  [[ ! -d "$file" ]] || die "导出目标是目录: $file"
+  if (( ! force )) && [[ -e "$file" ]]; then
+    die "文件已存在: $file（使用 --force 覆盖）"
+  fi
+
+  load_keys
+  local line key count=0
+  if (( force )); then
+    if ! (
+      umask 077
+      {
+        for line in "${KEYS[@]}"; do
+          IFS=$'\t' read -r key _ <<<"$line"
+          printf '%s\n' "$key"
+        done
+      } >"$file"
+    ); then
+      die "无法写入文件: $file"
+    fi
+  else
+    if ! (
+      umask 077
+      set -o noclobber
+      {
+        for line in "${KEYS[@]}"; do
+          IFS=$'\t' read -r key _ <<<"$line"
+          printf '%s\n' "$key"
+        done
+      } >"$file"
+    ); then
+      die "文件已存在或无法写入: $file"
+    fi
+  fi
+  chmod 600 "$file" || die "无法设置文件权限: $file"
+  count=${#KEYS[@]}
+  echo "已导出 ${count} 个key到: $file"
+  echo "警告: 导出文件包含明文 API Key，请妥善保管并在使用后删除。"
+}
+
 cmd_list() {
   ensure_store
   load_keys
@@ -1748,6 +1829,8 @@ main() {
   local cmd="${1:-help}"; shift || true
   case "$cmd" in
     add) cmd_add "$@";;
+    import) cmd_import "$@";;
+    export) cmd_export "$@";;
     list|ls) check_python3; cmd_list "$@";;
     current) check_python3; cmd_current "$@";;
     use) cmd_use "$@";;

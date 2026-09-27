@@ -38,8 +38,11 @@ The installer adds a `droid` function to your shell. Restart your terminal, then
 # 1. Add your API keys
 dk add fk-xxxx fk-yyyy fk-zzzz
 
-# Or import from file (one key per line)
-dk add --file keys.txt
+# Or import from a plaintext file (one key per line)
+dk import keys.txt
+
+# Export all keys to a plaintext file
+dk export keys-backup.txt
 
 # 2. Check usage and expiration
 dk list
@@ -58,6 +61,9 @@ Here's what `dk list` looks like:
 | ---------------------- | ------------------------------------------- |
 | `dk add <key...>`      | Add one or more API keys                    |
 | `dk add --file <path>` | Import keys from file                       |
+| `dk import <path>`     | Import keys from plaintext (deduplicated)   |
+| `dk export <path>`     | Export all keys to a plaintext file         |
+| `dk export --force <path>` | Overwrite a file and export all keys    |
 | `dk list`              | Show all keys with usage/expiration         |
 | `dk current`           | Display current key and copy export command |
 | `dk use <n>`           | Switch to key by index                      |
@@ -67,6 +73,8 @@ Here's what `dk list` looks like:
 | `dk config`            | Configure CLI options (border style, etc.)  |
 | `dk reinstall`         | Update to latest version                    |
 | `dk uninstall`         | Remove dk                                   |
+
+> **Security warning**: Exported files contain plaintext API keys. Store them securely, never commit them to Git, and delete them after importing. On macOS/Linux, exported files are automatically set to mode `0600`.
 
 ## Web Dashboard
 

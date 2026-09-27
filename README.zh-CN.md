@@ -38,8 +38,11 @@ irm https://raw.githubusercontent.com/gaoxiang89/oroio/main/install.ps1 | iex
 # 1. 添加 API 密钥
 dk add fk-xxxx fk-yyyy fk-zzzz
 
-# 或从文件导入（每行一个密钥）
-dk add --file keys.txt
+# 或从明文文件导入（每行一个密钥）
+dk import keys.txt
+
+# 将全部密钥导出到明文文件
+dk export keys-backup.txt
 
 # 2. 查看用量和到期时间
 dk list
@@ -58,6 +61,9 @@ droid
 | ---------------------- | -------------------------------- |
 | `dk add <key...>`      | 添加一个或多个 API 密钥          |
 | `dk add --file <路径>` | 从文件导入密钥                   |
+| `dk import <路径>`     | 从明文文件导入密钥（自动去重）   |
+| `dk export <路径>`     | 将全部密钥导出到明文文件         |
+| `dk export --force <路径>` | 覆盖已有文件并导出全部密钥   |
 | `dk list`              | 显示所有密钥的用量和到期时间     |
 | `dk current`           | 显示当前密钥并复制 export 命令   |
 | `dk use <序号>`        | 按序号切换密钥                   |
@@ -67,6 +73,8 @@ droid
 | `dk config`            | 配置 CLI 选项（边框样式等）      |
 | `dk reinstall`         | 更新到最新版本                   |
 | `dk uninstall`         | 卸载 dk                          |
+
+> **安全提示**：导出的文件包含明文 API Key。请存放在安全位置，不要提交到 Git，并在导入完成后及时删除。macOS/Linux 下导出文件的权限会自动设为 `0600`。
 
 ## Web 控制台
 

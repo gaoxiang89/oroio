@@ -36,6 +36,8 @@ function Show-Usage {
 Usage: dk <command> [args]
 Commands:
   add <key...>           add keys (or -File <path>)
+  import <path>          import keys from a plaintext file
+  export [-Force] <path> export all keys to a plaintext file
   list                   list keys with balance/expiry
   current                show current key + export + clipboard
   use [index]            switch key (interactive if no index)
@@ -655,10 +657,115 @@ function Cmd-Add {
         Write-ErrorExit "请提供至少一个key"
     }
     
-    $keys = $keys + $newKeys
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    foreach ($key in $keys) {
+        [void]$seen.Add([string]$key)
+    }
+
+    $added = 0
+    $skipped = 0
+    foreach ($key in $newKeys) {
+        if ($seen.Add([string]$key)) {
+            $keys += $key
+            $added++
+        }
+        else {
+            $skipped++
+        }
+    }
     Save-Keys -Keys $keys
-    
-    Write-Host "已添加。当前共有 $($keys.Length) 个key。"
+
+    $message = "已添加 $added 个key"
+    if ($skipped -gt 0) {
+        $message += "，跳过 $skipped 个重复"
+    }
+    Write-Host "$message。当前共有 $($keys.Length) 个key。"
+}
+
+function Cmd-Import {
+    param([string[]]$ImportArgs)
+
+    if ($ImportArgs.Length -ne 1) {
+        Write-ErrorExit "用法: dk import <文件>"
+    }
+    Cmd-Add -AddArgs @("--file", $ImportArgs[0])
+}
+
+function Cmd-Export {
+    param([string[]]$ExportArgs)
+
+    $force = $false
+    $filePath = $null
+    $parseOptions = $true
+    foreach ($arg in $ExportArgs) {
+        if ($parseOptions -and $arg -eq "--") {
+            $parseOptions = $false
+        }
+        elseif ($parseOptions -and ($arg -eq "-Force" -or $arg -eq "--force" -or $arg -eq "-f")) {
+            $force = $true
+        }
+        elseif ($parseOptions -and $arg.StartsWith("-")) {
+            Write-ErrorExit "未知选项: $arg"
+        }
+        elseif ($null -eq $filePath) {
+            $filePath = $arg
+        }
+        else {
+            Write-ErrorExit "用法: dk export [-Force] <文件>"
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($filePath)) {
+        Write-ErrorExit "用法: dk export [-Force] <文件>"
+    }
+
+    Ensure-Store
+    $exportPath = [System.IO.Path]::GetFullPath($filePath)
+    $storePath = [System.IO.Path]::GetFullPath($script:KEYS_FILE)
+    $pathComparison = if ($env:OS -eq "Windows_NT") {
+        [System.StringComparison]::OrdinalIgnoreCase
+    } else {
+        [System.StringComparison]::Ordinal
+    }
+    if ([string]::Equals($exportPath, $storePath, $pathComparison)) {
+        Write-ErrorExit "不能导出到加密存储文件: $script:KEYS_FILE"
+    }
+    if (Test-Path -LiteralPath $exportPath -PathType Container) {
+        Write-ErrorExit "导出目标是目录: $filePath"
+    }
+    if (Test-Path -LiteralPath $exportPath) {
+        $item = Get-Item -LiteralPath $exportPath -Force
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            Write-ErrorExit "不支持导出到符号链接: $filePath"
+        }
+        if (-not $force) {
+            Write-ErrorExit "文件已存在: $filePath（使用 -Force 覆盖）"
+        }
+    }
+
+    $parent = Split-Path $exportPath -Parent
+    if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+        Write-ErrorExit "目录不存在: $parent"
+    }
+
+    $keys = @(Decrypt-Keys)
+    $content = if ($keys.Length -gt 0) { ($keys -join "`n") + "`n" } else { "" }
+    $encoding = [System.Text.UTF8Encoding]::new($false)
+    try {
+        [System.IO.File]::WriteAllText($exportPath, $content, $encoding)
+        if ($env:OS -ne "Windows_NT") {
+            $chmod = Get-Command chmod -ErrorAction SilentlyContinue
+            if ($chmod) {
+                & $chmod.Source 600 -- $exportPath
+                if ($LASTEXITCODE -ne 0) { throw "chmod failed" }
+            }
+        }
+    }
+    catch {
+        Write-ErrorExit "无法写入文件: $filePath"
+    }
+
+    Write-Host "已导出 $($keys.Length) 个key到: $filePath"
+    Write-Host "警告: 导出文件包含明文 API Key，请妥善保管并在使用后删除。" -ForegroundColor Yellow
 }
 
 function Fetch-UsageParallel {
@@ -1124,6 +1231,8 @@ function Cmd-Uninstall {
 # Main entry
 switch ($Command) {
     "add" { Cmd-Add -AddArgs $Arguments }
+    "import" { Cmd-Import -ImportArgs $Arguments }
+    "export" { Cmd-Export -ExportArgs $Arguments }
     "list" { Cmd-List }
     "ls" { Cmd-List }
     "current" { Cmd-Current }
