@@ -74,6 +74,8 @@ droid
 | `dk byok list`         | 查看官方 BYOK 平台配置           |
 | `dk byok refresh [平台]` | 使用已保存 Key 刷新模型        |
 | `dk byok remove <平台>` | 删除指定平台管理的模型          |
+| `dk byok export [--force] <路径>` | 导出 BYOK 配置（含明文 Key） |
+| `dk byok import [--force] <路径>` | 从导出文件导入 BYOK 配置      |
 | `dk config`            | 配置 CLI 选项（边框样式等）      |
 | `dk reinstall`         | 更新到最新版本                   |
 | `dk uninstall`         | 卸载 dk                          |
@@ -114,6 +116,17 @@ dk byok setup kimi
 $env:KIMI_CODING_API_KEY = 'your-key'  # Windows PowerShell
 dk byok setup kimi
 ```
+
+使用 `dk byok export` 和 `dk byok import` 可以备份整套 BYOK 配置，或在多台机器之间迁移。导出文件包含所有已配置平台（官方平台和 OpenAI-compatible 端点）的明文 API Key、选中的模型以及保留的不可用模型。目标文件已存在时必须加 `--force` 才会覆盖；macOS/Linux 下文件权限为 `0600`。
+
+```bash
+dk byok export byok-backup.json        # 旧机器上导出
+dk byok import byok-backup.json        # 新机器上导入
+```
+
+导入前会先完整校验文件，确认无误才会修改本地配置：官方平台的 Base URL 必须与官方端点一致，OpenAI-compatible 端点必须与其记录的 Base URL 匹配。已配置的平台默认跳过，加 `--force` 才会覆盖；无关的 `customModels` 条目和其他配置字段会保留，导入条目统一写入当前的 `settings.json` 格式。
+
+Web 控制台和桌面端的 BYOK 页面提供同样的备份能力：**Export** 下载与 `dk byok export` 相同格式的 JSON 文件，**Import** 按相同的规则校验并恢复，覆盖已配置平台前会先询问。
 
 Web 控制台和桌面端也提供相同的三张快捷配置卡片。识别到 GLM、DeepSeek 或 Kimi 模型后，会关联 Droid 内置模型能力，配置完成后可在 `/model` 中继续选择该模型支持的思考等级。配置前会直接调用平台官方模型接口验证 Key；验证或刷新失败时不会修改已有配置。刷新时，已有模型默认保持选中，新发现模型会突出显示但不自动选中；上游暂时消失的模型会标记为 unavailable 并继续保留，只有你明确取消勾选或删除平台后才会移除。
 

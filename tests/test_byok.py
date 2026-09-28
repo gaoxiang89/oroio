@@ -404,6 +404,197 @@ class ByokTests(unittest.TestCase):
         settings = self.read(self.factory / "settings.json")
         self.assertEqual([row["model"] for row in settings["customModels"]], ["manual"])
 
+    def test_export_round_trips_official_and_openai_compatible_providers(self):
+        byok.apply(
+            "glm", "glm-secret", ["glm-5.3", "glm-5.3-flash"], self.factory, self.oroio,
+            opener=self.models({"id": "glm-5.3", "display_name": "GLM 5.3"}, {"id": "glm-5.3-flash"}),
+        )
+        byok.apply_openai_compatible(
+            "https://api.example.test/v1", "compat-secret", ["gpt-5.6"], self.factory, self.oroio,
+            opener=opener_for({"data": [{"id": "gpt-5.6"}]}),
+        )
+        export_path = self.factory.parent / "byok-export.json"
+
+        empty_root = self.factory.parent / "empty"
+        with self.assertRaises(byok.ByokError) as caught:
+            byok.export_config(empty_root / "out.json", empty_root / ".factory", empty_root / ".oroio")
+        self.assertEqual(caught.exception.code, "not_configured")
+        self.assertFalse((empty_root / "out.json").exists())
+
+        result = byok.export_config(export_path, self.factory, self.oroio)
+        endpoint_id, _ = byok._openai_compatible_provider("https://api.example.test/v1")
+        self.assertEqual(set(result["providers"]), {"glm", endpoint_id})
+        payload = self.read(export_path)
+        self.assertEqual(payload["version"], 1)
+        glm_entry = next(
+            item for item in payload["providers"]["glm"]["models"] if item["model"] == "glm-5.3"
+        )
+        self.assertEqual(glm_entry["apiKey"], "glm-secret")
+        self.assertEqual(glm_entry["baseUrl"], byok.PROVIDERS["glm"]["baseUrl"])
+        compat_entry = payload["providers"][endpoint_id]["models"][0]
+        self.assertEqual(compat_entry["apiKey"], "compat-secret")
+
+        with self.assertRaises(byok.ByokError) as caught:
+            byok.export_config(export_path, self.factory, self.oroio)
+        self.assertEqual(caught.exception.code, "path_exists")
+        byok.export_config(export_path, self.factory, self.oroio, force=True)
+        if os.name != "nt":
+            self.assertEqual(export_path.stat().st_mode & 0o777, 0o600)
+
+        fresh_factory = self.factory.parent / "home2" / ".factory"
+        fresh_oroio = self.factory.parent / "home2" / ".oroio"
+        self.write(fresh_factory / "settings.json", {
+            "theme": "dark",
+            "customModels": [{"model": "manual", "baseUrl": "https://example.test", "apiKey": "keep", "provider": "openai"}],
+        })
+        imported = byok.import_config(export_path, fresh_factory, fresh_oroio)
+        self.assertEqual(imported["importedProviders"], ["glm", endpoint_id])
+        self.assertEqual(imported["skippedProviders"], [])
+        settings = self.read(fresh_factory / "settings.json")
+        self.assertEqual(settings["theme"], "dark")
+        self.assertEqual(
+            [row["model"] for row in settings["customModels"]],
+            ["manual", "glm-5.3", "glm-5.3-flash", "gpt-5.6"],
+        )
+        glm_row = next(row for row in settings["customModels"] if row["model"] == "glm-5.3")
+        self.assertEqual(glm_row["apiKey"], "glm-secret")
+        self.assertEqual(glm_row["provider"], "anthropic")
+        self.assertEqual(glm_row["authMode"], "bearer")
+        self.assertEqual(glm_row["baseModelId"], "glm-5.3")
+        self.assertEqual(byok._saved_key("glm", fresh_factory, fresh_oroio), "glm-secret")
+        rows = {row["id"]: row for row in byok.list_providers(fresh_factory, fresh_oroio)}
+        self.assertTrue(rows["glm"]["configured"])
+        self.assertNotIn("glm-secret", (fresh_oroio / "byok.json").read_text())
+        self.assertNotIn("compat-secret", (fresh_oroio / "byok.json").read_text())
+
+        again = byok.import_config(export_path, fresh_factory, fresh_oroio)
+        self.assertEqual(again["importedProviders"], [])
+        self.assertEqual(set(again["skippedProviders"]), {"glm", endpoint_id})
+        forced = byok.import_config(export_path, fresh_factory, fresh_oroio, force=True)
+        self.assertEqual(set(forced["importedProviders"]), {"glm", endpoint_id})
+
+    def test_import_skips_or_replaces_configured_provider(self):
+        byok.apply("kimi", "key-a", ["kimi-code"], self.factory, self.oroio, opener=self.models({"id": "kimi-code"}))
+        export_path = self.factory.parent / "kimi-export.json"
+        self.write(export_path, {
+            "version": 1,
+            "exportedAt": "2026-09-28T00:00:00Z",
+            "providers": {"kimi": {
+                "name": "Kimi Code Plan",
+                "baseUrl": byok.PROVIDERS["kimi"]["baseUrl"],
+                "managedModelIds": ["kimi-code"],
+                "models": [{
+                    "model": "kimi-code",
+                    "displayName": "Kimi Code",
+                    "baseUrl": byok.PROVIDERS["kimi"]["baseUrl"],
+                    "apiKey": "key-b",
+                    "provider": "generic-chat-completion-api",
+                    "suspicious": "drop-me",
+                }],
+            }},
+        })
+
+        skipped = byok.import_config(export_path, self.factory, self.oroio)
+        self.assertEqual(skipped["importedProviders"], [])
+        self.assertEqual(skipped["skippedProviders"], ["kimi"])
+        entry = self.read(self.factory / "settings.json")["customModels"][0]
+        self.assertEqual(entry["apiKey"], "key-a")
+
+        replaced = byok.import_config(export_path, self.factory, self.oroio, force=True)
+        self.assertEqual(replaced["importedProviders"], ["kimi"])
+        settings = self.read(self.factory / "settings.json")
+        self.assertEqual(len(settings["customModels"]), 1)
+        entry = settings["customModels"][0]
+        self.assertEqual(entry["apiKey"], "key-b")
+        self.assertNotIn("suspicious", entry)
+        self.assertEqual(byok._saved_key("kimi", self.factory, self.oroio), "key-b")
+
+    def test_import_rejects_invalid_files_without_writing(self):
+        good_model = {
+            "model": "kimi-code",
+            "baseUrl": byok.PROVIDERS["kimi"]["baseUrl"],
+            "apiKey": "key",
+            "provider": "generic-chat-completion-api",
+        }
+
+        def file_with(providers, version=1):
+            path = self.factory.parent / "import.json"
+            path.write_text(json.dumps({"version": version, "exportedAt": "now", "providers": providers}))
+            return path
+
+        endpoint_id, _ = byok._openai_compatible_provider("https://api.example.test/v1")
+        cases = [
+            ({"openrouter": {"baseUrl": "https://openrouter.test/v1", "models": [dict(good_model)]}}, 1),
+            ({"glm": {"baseUrl": "https://evil.test", "models": [dict(good_model)]}}, 1),
+            ({"openai-compatible:0000000000000000": {"baseUrl": "https://api.example.test/v1", "models": [dict(good_model)]}}, 1),
+            ({"kimi": {"baseUrl": byok.PROVIDERS["kimi"]["baseUrl"], "models": []}}, 1),
+            ({"kimi": {"baseUrl": byok.PROVIDERS["kimi"]["baseUrl"], "models": [{"model": "kimi-code"}]}}, 1),
+            ({"kimi": {"baseUrl": byok.PROVIDERS["kimi"]["baseUrl"], "models": [good_model]}}, 2),
+        ]
+        for providers, version in cases:
+            with self.subTest(providers=providers), self.assertRaises(byok.ByokError) as caught:
+                byok.import_config(file_with(providers, version), self.factory, self.oroio)
+            self.assertEqual(caught.exception.code, "invalid_import")
+            self.assertFalse((self.factory / "settings.json").exists())
+            self.assertFalse((self.oroio / "byok.json").exists())
+
+        bad_json = self.factory.parent / "bad.json"
+        bad_json.write_text("not-json")
+        with self.assertRaises(byok.ByokError) as caught:
+            byok.import_config(bad_json, self.factory, self.oroio)
+        self.assertEqual(caught.exception.code, "invalid_import")
+        with self.assertRaises(byok.ByokError) as caught:
+            byok.import_config(self.factory.parent / "missing.json", self.factory, self.oroio)
+        self.assertEqual(caught.exception.code, "not_found")
+
+    def test_export_converts_legacy_entries_and_derives_endpoint_base_url(self):
+        endpoint_id, _ = byok._openai_compatible_provider("https://relay.example.test/v1")
+        self.write(self.factory / "settings.json", {"customModels": [{
+            "model": "oc-model",
+            "baseUrl": "https://relay.example.test/v1",
+            "apiKey": "relay-key",
+            "provider": "generic-chat-completion-api",
+        }]})
+        self.write(self.factory / "config.json", {"custom_models": [{
+            "model": "kimi-old",
+            "model_display_name": "Old Kimi",
+            "base_url": byok.PROVIDERS["kimi"]["baseUrl"],
+            "api_key": "legacy-key",
+            "provider": "generic-chat-completion-api",
+        }]})
+        self.write(self.oroio / "byok.json", {"version": 1, "providers": {
+            "kimi": {
+                "managedModels": ["kimi-old"],
+                "locations": {"kimi-old": "legacy"},
+                "knownModels": [{"id": "kimi-old", "displayName": "Old Kimi"}],
+                "unavailable": [],
+            },
+            endpoint_id: {
+                "managedModels": ["oc-model"],
+                "locations": {"oc-model": "settings"},
+                "knownModels": [{"id": "oc-model"}],
+                "unavailable": [],
+            },
+        }})
+        export_path = self.factory.parent / "legacy-export.json"
+        result = byok.export_config(export_path, self.factory, self.oroio)
+        self.assertEqual(set(result["providers"]), {"kimi", endpoint_id})
+        kimi_model = result["providers"]["kimi"]["models"][0]
+        self.assertEqual(kimi_model["model"], "kimi-old")
+        self.assertEqual(kimi_model["displayName"], "Old Kimi")
+        self.assertEqual(kimi_model["apiKey"], "legacy-key")
+        self.assertEqual(kimi_model["baseUrl"], byok.PROVIDERS["kimi"]["baseUrl"])
+        self.assertEqual(result["providers"][endpoint_id]["baseUrl"], "https://relay.example.test/v1")
+
+        fresh_factory = self.factory.parent / "home3" / ".factory"
+        fresh_oroio = self.factory.parent / "home3" / ".oroio"
+        imported = byok.import_config(export_path, fresh_factory, fresh_oroio)
+        self.assertEqual(set(imported["importedProviders"]), {"kimi", endpoint_id})
+        rows = {row["model"]: row for row in self.read(fresh_factory / "settings.json")["customModels"]}
+        self.assertEqual(rows["kimi-old"]["apiKey"], "legacy-key")
+        self.assertEqual(rows["kimi-old"]["displayName"], "Old Kimi")
+        self.assertEqual(rows["oc-model"]["baseUrl"], "https://relay.example.test/v1")
+
     def test_manual_list_update_and_remove_merge_current_and_legacy(self):
         self.write(self.factory / "settings.json", {
             "topLevel": True,
@@ -514,6 +705,40 @@ class ByokTests(unittest.TestCase):
         with mock.patch.object(sys, "stdin", fake_stdin), mock.patch.object(sys, "stdout", io.StringIO()), mock.patch("byok.remove_provider", return_value={"removedModelIds": ["model-a"]}) as remove_mock:
             self.assertEqual(byok._cli_remove("kimi"), 0)
         remove_mock.assert_called_once_with("kimi")
+
+    def test_cli_export_and_import(self):
+        export_result = {
+            "success": True,
+            "path": "x.json",
+            "providers": {
+                "glm": {"models": [{}, {}], "unavailableModelIds": []},
+                "kimi": {"models": [{}], "unavailableModelIds": ["kimi-gone"]},
+            },
+        }
+        output = io.StringIO()
+        with mock.patch.object(sys, "stdout", output), mock.patch("byok.export_config", return_value=export_result) as export_mock:
+            self.assertEqual(byok._cli_export("x.json", False), 0)
+        export_mock.assert_called_once_with("x.json", force=False)
+        self.assertIn("已导出 2 个平台配置", output.getvalue())
+        self.assertIn("glm: 2 个模型", output.getvalue())
+        self.assertIn("kimi: 1 个模型；不可用: 1", output.getvalue())
+        self.assertIn("明文 API Key", output.getvalue())
+
+        import_result = {"success": True, "importedProviders": ["glm"], "skippedProviders": ["kimi"]}
+        output = io.StringIO()
+        with mock.patch.object(sys, "stdout", output), mock.patch("byok.import_config", return_value=import_result) as import_mock:
+            self.assertEqual(byok._cli_import("x.json", True), 0)
+        import_mock.assert_called_once_with("x.json", force=True)
+        self.assertIn("已导入 glm", output.getvalue())
+        self.assertIn("跳过 kimi", output.getvalue())
+
+        with self.assertRaises(byok.ByokError):
+            byok._cli_export(None, False)
+        with self.assertRaises(byok.ByokError):
+            byok._cli_import(None, False)
+        with self.assertRaises(byok.ByokError) as caught:
+            byok.cli_main(["import", str(Path(self.temp.name) / "nope.json")])
+        self.assertEqual(caught.exception.code, "not_found")
 
 
 if __name__ == "__main__":

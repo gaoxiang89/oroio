@@ -74,6 +74,8 @@ Here's what `dk list` looks like:
 | `dk byok list`         | List official BYOK provider configurations  |
 | `dk byok refresh [provider]` | Refresh models using the saved key      |
 | `dk byok remove <provider>` | Remove models managed for one provider  |
+| `dk byok export [--force] <path>` | Export BYOK config (contains plaintext keys) |
+| `dk byok import [--force] <path>` | Import BYOK config from an export file |
 | `dk config`            | Configure CLI options (border style, etc.)  |
 | `dk reinstall`         | Update to latest version                    |
 | `dk uninstall`         | Remove dk                                   |
@@ -114,6 +116,17 @@ dk byok setup kimi
 $env:KIMI_CODING_API_KEY = 'your-key'  # Windows PowerShell
 dk byok setup kimi
 ```
+
+Back up or migrate the whole BYOK setup between machines with `dk byok export` and `dk byok import`. The export file bundles every configured provider, including official plans and OpenAI-compatible endpoints, together with their plaintext API keys, selected models, and unavailable-but-retained models. It refuses to overwrite an existing file unless `--force` is passed, and on macOS/Linux it is written with mode `0600`.
+
+```bash
+dk byok export byok-backup.json        # on the old machine
+dk byok import byok-backup.json        # on the new machine
+```
+
+Import validates the file before touching any local config: official providers must keep their official Base URL, and OpenAI-compatible endpoints must still match their recorded Base URL. Already-configured providers are skipped unless you pass `--force`, unrelated `customModels` and settings are preserved, and imported entries are written to the current `settings.json` format.
+
+The BYOK page in the Web dashboard and the desktop app offers the same backup: **Export** downloads the same JSON format as `dk byok export`, and **Import** restores it after the same validation, asking before it overwrites an already-configured provider.
 
 The same guided cards are available on the Web dashboard and in the desktop app. Recognized GLM, DeepSeek, and Kimi models are linked to Droid's built-in model profiles, so `/model` offers their supported reasoning levels after setup. Setup validates the key against the provider's official model endpoint before changing any local config. A refresh keeps currently managed models selected, highlights newly discovered models without selecting them, and retains upstream models marked unavailable until you explicitly deselect them or remove the provider.
 

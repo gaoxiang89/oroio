@@ -120,6 +120,7 @@ interface ManagedProviderState {
   knownModels?: DiscoveredModel[];
   lastDiscoveredAt?: string;
   unavailable?: string[];
+  baseUrl?: string;
 }
 
 interface StateFile extends JsonObject {
@@ -688,6 +689,7 @@ async function syncProvider(
     knownModels,
     lastDiscoveredAt: new Date().toISOString(),
     unavailable,
+    baseUrl: provider.baseUrl,
   };
   await atomicWriteJson(SETTINGS_PATH, settings);
   if (legacyExists || Object.values(locations).includes('legacy')) await atomicWriteJson(LEGACY_PATH, legacy);
@@ -814,4 +816,281 @@ export async function removeProvider(providerId: string): Promise<{ success: tru
   delete state.providers[normalizedId];
   await atomicWriteJson(STATE_PATH, state);
   return { success: true, provider: normalizedId, removedModelIds };
+}
+
+const OPENAI_COMPATIBLE_PREFIX = 'openai-compatible:';
+const EXPORT_VERSION = 1;
+
+export interface ByokExportProvider {
+  name: string;
+  baseUrl: string;
+  managedModelIds: string[];
+  models: JsonObject[];
+  unavailableModelIds?: string[];
+  lastDiscoveredAt?: string;
+}
+
+export interface ByokExportPayload extends JsonObject {
+  version: number;
+  exportedAt: string;
+  providers: Record<string, ByokExportProvider>;
+}
+
+export interface ByokExportResult {
+  success: true;
+  payload: ByokExportPayload;
+  providers: Record<string, { managedModelIds: string[] }>;
+}
+
+export interface ByokImportResult {
+  success: true;
+  importedProviders: string[];
+  skippedProviders: string[];
+}
+
+function entryCurrent(entry: JsonObject, source: Source): JsonObject {
+  return source === 'settings' ? { ...entry } : currentView(entry as unknown as CustomModel);
+}
+
+function exportProviderPayload(
+  providerId: string,
+  provider: RuntimeProvider,
+  saved: ManagedProviderState,
+  found: Map<string, [Source, JsonObject]>,
+): ByokExportProvider {
+  const managed = managedIds(saved).filter((id) => found.has(id));
+  const payload: ByokExportProvider = {
+    name: provider.name || providerId,
+    baseUrl: provider.baseUrl,
+    managedModelIds: managed,
+    models: managed.map((id) => {
+      const [source, entry] = found.get(id)!;
+      return entryCurrent(entry, source);
+    }),
+  };
+  const unavailable = Array.isArray(saved.unavailable)
+    ? saved.unavailable.filter((item): item is string => typeof item === 'string')
+    : [];
+  if (unavailable.length) payload.unavailableModelIds = unavailable;
+  if (typeof saved.lastDiscoveredAt === 'string') payload.lastDiscoveredAt = saved.lastDiscoveredAt;
+  return payload;
+}
+
+function collectExportProviders(
+  settings: JsonObject,
+  legacy: JsonObject,
+  state: StateFile,
+): Record<string, ByokExportProvider> {
+  const rowsBySource: Array<[Source, JsonObject[]]> = [
+    ['settings', objectRows(settings, 'customModels')],
+    ['legacy', objectRows(legacy, 'custom_models')],
+  ];
+  const claimed = new Set<JsonObject>();
+  const result: Record<string, ByokExportProvider> = {};
+  const deferred: Array<[string, ManagedProviderState]> = [];
+
+  const scan = (provider: RuntimeProvider, saved: ManagedProviderState): Map<string, [Source, JsonObject]> => {
+    const managed = new Set(managedIds(saved));
+    const locations = isObject(saved.locations) ? saved.locations as Record<string, Source> : {};
+    const found = new Map<string, [Source, JsonObject]>();
+    for (const [source, rows] of rowsBySource) {
+      for (const entry of rows) {
+        const id = modelId(entry);
+        if (!managed.has(id) || found.has(id) || claimed.has(entry)) continue;
+        if (locations[id] && locations[id] !== source) continue;
+        if (entryBaseUrl(entry, source) === provider.baseUrl) found.set(id, [source, entry]);
+      }
+    }
+    return found;
+  };
+
+  for (const [providerId, rawSaved] of Object.entries(state.providers)) {
+    const saved = rawSaved || {};
+    if (!managedIds(saved).length) continue;
+    const official = TRUSTED_PROVIDERS[providerId.toLowerCase()];
+    if (official) {
+      const found = scan(official, saved);
+      if (!found.size) continue;
+      for (const [, entry] of found.values()) claimed.add(entry);
+      result[providerId] = exportProviderPayload(providerId, official, saved, found);
+      continue;
+    }
+    if (providerId.startsWith(OPENAI_COMPATIBLE_PREFIX)) {
+      if (typeof saved.baseUrl === 'string' && saved.baseUrl) {
+        const provider = openAICompatibleProvider(saved.baseUrl);
+        const found = scan(provider, saved);
+        if (!found.size) continue;
+        for (const [, entry] of found.values()) claimed.add(entry);
+        result[providerId] = exportProviderPayload(providerId, provider, saved, found);
+      } else {
+        deferred.push([providerId, saved]);
+      }
+    }
+  }
+
+  const officialUrls = new Set(Object.values(TRUSTED_PROVIDERS).map((provider) => provider.baseUrl));
+  for (const [providerId, saved] of deferred) {
+    const managed = new Set(managedIds(saved));
+    let baseUrl = '';
+    const found = new Map<string, [Source, JsonObject]>();
+    for (const [source, rows] of rowsBySource) {
+      for (const entry of rows) {
+        const id = modelId(entry);
+        if (!managed.has(id) || found.has(id) || claimed.has(entry)) continue;
+        const url = entryBaseUrl(entry, source);
+        if (!url || officialUrls.has(url)) continue;
+        if (baseUrl && url !== baseUrl) continue;
+        baseUrl = url;
+        found.set(id, [source, entry]);
+      }
+    }
+    if (!found.size) continue;
+    const provider = openAICompatibleProvider(baseUrl);
+    for (const [, entry] of found.values()) claimed.add(entry);
+    result[providerId] = exportProviderPayload(providerId, provider, saved, found);
+  }
+  return result;
+}
+
+export async function exportByokConfig(): Promise<ByokExportResult> {
+  const [settings, legacy, state] = await Promise.all([readJson(SETTINGS_PATH, {}), readJson(LEGACY_PATH, {}), readState()]);
+  const providers = collectExportProviders(settings, legacy, state);
+  if (!Object.keys(providers).length) throw new ByokError('not_configured', 'No BYOK provider is configured yet.');
+  return {
+    success: true,
+    payload: { version: EXPORT_VERSION, exportedAt: new Date().toISOString(), providers },
+    providers: Object.fromEntries(
+      Object.entries(providers).map(([id, provider]) => [id, { managedModelIds: provider.managedModelIds }]),
+    ),
+  };
+}
+
+function importProviderFor(providerId: string, data: unknown): [string, RuntimeProvider] {
+  if (!isObject(data)) throw new ByokError('invalid_import', 'Provider entries in the import file must be objects.');
+  const official = TRUSTED_PROVIDERS[providerId.toLowerCase()];
+  if (official) {
+    if (data.baseUrl !== official.baseUrl) {
+      throw new ByokError('invalid_import', `Provider ${official.id} was exported with a different Base URL.`);
+    }
+    return [official.id, official];
+  }
+  if (providerId.startsWith(OPENAI_COMPATIBLE_PREFIX)) {
+    const provider = openAICompatibleProvider(typeof data.baseUrl === 'string' ? data.baseUrl : '');
+    if (provider.id !== providerId) {
+      throw new ByokError('invalid_import', 'OpenAI-compatible provider id does not match its Base URL.');
+    }
+    return [provider.id, provider];
+  }
+  throw new ByokError('invalid_import', `Unknown provider in the import file: ${providerId}`);
+}
+
+function sanitizeImportedEntry(raw: unknown, provider: RuntimeProvider): JsonObject {
+  if (!isObject(raw)) throw new ByokError('invalid_import', 'Model entries in the import file must be objects.');
+  const rawModel = raw.model;
+  const rawKey = raw.apiKey;
+  if (typeof rawModel !== 'string' || !rawModel.trim()) {
+    throw new ByokError('invalid_import', 'A model entry in the import file has no model id.');
+  }
+  if (typeof rawKey !== 'string' || !rawKey.trim()) {
+    throw new ByokError('invalid_import', `Model ${rawModel} has no API key.`);
+  }
+  const id = rawModel.trim();
+  const entry: JsonObject = {
+    model: id,
+    displayName: typeof raw.displayName === 'string' && raw.displayName.trim() ? raw.displayName.trim() : id,
+    baseUrl: provider.baseUrl,
+    apiKey: rawKey,
+    provider: provider.droidProvider,
+  };
+  if (provider.authMode) entry.authMode = provider.authMode;
+  const maxOutputTokens = positiveInt(raw.maxOutputTokens);
+  if (maxOutputTokens !== undefined) entry.maxOutputTokens = maxOutputTokens;
+  if (typeof raw.noImageSupport === 'boolean') entry.noImageSupport = raw.noImageSupport;
+  if (typeof raw.reasoningEffort === 'string' && REASONING_EFFORTS.has(raw.reasoningEffort) && raw.reasoningEffort !== 'default') {
+    entry.reasoningEffort = raw.reasoningEffort;
+  }
+  if (typeof raw.enableThinking === 'boolean') entry.enableThinking = raw.enableThinking;
+  const thinkingMaxTokens = positiveInt(raw.thinkingMaxTokens);
+  if (thinkingMaxTokens !== undefined) entry.thinkingMaxTokens = thinkingMaxTokens;
+  if (isObject(raw.extraArgs)) entry.extraArgs = raw.extraArgs;
+  if (isObject(raw.extraHeaders)) entry.extraHeaders = raw.extraHeaders;
+  const base = baseModelId(id);
+  if (base) entry.baseModelId = base;
+  return entry;
+}
+
+export async function importByokConfig(payloadValue: unknown, force = false): Promise<ByokImportResult> {
+  if (
+    !isObject(payloadValue)
+    || payloadValue.version !== EXPORT_VERSION
+    || !isObject(payloadValue.providers)
+    || !Object.keys(payloadValue.providers).length
+  ) {
+    throw new ByokError('invalid_import', 'The import file is not a valid BYOK export.');
+  }
+  const [settings, legacy, state, legacyExists] = await Promise.all([
+    readJson(SETTINGS_PATH, {}), readJson(LEGACY_PATH, {}), readState(), exists(LEGACY_PATH),
+  ]);
+  let settingsRows = objectRows(settings, 'customModels');
+  let legacyRows = objectRows(legacy, 'custom_models');
+  const imported: string[] = [];
+  const skipped: string[] = [];
+
+  for (const [rawId, rawData] of Object.entries(payloadValue.providers as Record<string, unknown>)) {
+    const [providerId, provider] = importProviderFor(rawId, rawData);
+    const data = rawData as ByokExportProvider;
+    if (!Array.isArray(data.models) || !data.models.length) {
+      throw new ByokError('invalid_import', `Provider ${rawId} has no importable models.`);
+    }
+    const byId = new Map<string, JsonObject>();
+    for (const item of data.models) {
+      const entry = sanitizeImportedEntry(item, provider);
+      if (!byId.has(entry.model as string)) byId.set(entry.model as string, entry);
+    }
+    const unavailable = Array.isArray(data.unavailableModelIds)
+      ? data.unavailableModelIds.filter((item): item is string => typeof item === 'string' && byId.has(item))
+      : [];
+
+    const saved = state.providers[providerId] || {};
+    const oldManaged = managedIds(saved);
+    if (oldManaged.length && findManagedEntries(provider, saved, settings, legacy).size && !force) {
+      skipped.push(providerId);
+      continue;
+    }
+    const oldSet = new Set(oldManaged);
+    settingsRows = settingsRows.filter(
+      (entry) => !(oldSet.has(modelId(entry)) && entryBaseUrl(entry, 'settings') === provider.baseUrl),
+    );
+    legacyRows = legacyRows.filter(
+      (entry) => !(oldSet.has(modelId(entry)) && entryBaseUrl(entry, 'legacy') === provider.baseUrl),
+    );
+    const knownModels: DiscoveredModel[] = [];
+    for (const [id, entry] of byId) {
+      settingsRows.push(entry);
+      const known: DiscoveredModel = { id, displayName: entry.displayName as string };
+      if (entry.maxOutputTokens !== undefined) known.maxOutputTokens = entry.maxOutputTokens as number;
+      if (entry.noImageSupport !== undefined) known.supportsImages = !entry.noImageSupport;
+      knownModels.push(known);
+    }
+    state.providers[providerId] = {
+      managedModels: [...byId.keys()],
+      locations: Object.fromEntries([...byId.keys()].map((id) => [id, 'settings' as Source])),
+      knownModels,
+      lastDiscoveredAt: typeof data.lastDiscoveredAt === 'string' ? data.lastDiscoveredAt : new Date().toISOString(),
+      unavailable,
+      baseUrl: provider.baseUrl,
+    };
+    imported.push(providerId);
+  }
+
+  if (imported.length) {
+    settings.customModels = settingsRows;
+    await atomicWriteJson(SETTINGS_PATH, settings);
+    if (legacyExists) {
+      legacy.custom_models = legacyRows;
+      await atomicWriteJson(LEGACY_PATH, legacy);
+    }
+    await atomicWriteJson(STATE_PATH, state);
+  }
+  return { success: true, importedProviders: imported, skippedProviders: skipped };
 }

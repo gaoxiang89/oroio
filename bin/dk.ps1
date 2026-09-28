@@ -44,6 +44,8 @@ Commands:
   serve [start|stop|status]  web dashboard (automatic port; DKM_SERVE_PORT to override)
   byok setup [glm|deepseek|kimi]  configure an official BYOK provider
   byok list|refresh [provider]|remove <provider>
+  byok export [--force] <file>   export BYOK config (contains plaintext keys)
+  byok import [--force] <file>   import BYOK config from an export file
   run <cmd...>           run with key (auto-rotate on zero balance)
   rm <index...>          remove keys
   reinstall              update to latest version

@@ -88,6 +88,24 @@ export interface ByokApplyResult {
   models?: ByokModel[];
 }
 
+export interface ByokExportPayload {
+  version: number;
+  exportedAt: string;
+  providers: Record<string, unknown>;
+}
+
+export interface ByokExportResult {
+  success: true;
+  payload: ByokExportPayload;
+  providers: Record<string, { managedModelIds: string[] }>;
+}
+
+export interface ByokImportResult {
+  success: true;
+  importedProviders: string[];
+  skippedProviders: string[];
+}
+
 export interface DkCheckResult {
   installed: boolean;
   installCmd: string;
@@ -149,6 +167,8 @@ export interface OroioAPI {
   removeByokProvider: (provider: string) => Promise<{ success: true; provider: string; removedModelIds: string[] }>;
   discoverOpenAICompatible: (baseUrl: string, apiKey: string) => Promise<ByokDiscovery & { baseUrl: string }>;
   applyOpenAICompatible: (baseUrl: string, apiKey: string, modelIds: string[]) => Promise<ByokApplyResult & { baseUrl: string }>;
+  exportByokConfig: () => Promise<ByokExportResult>;
+  importByokConfig: (payload: unknown, force: boolean) => Promise<ByokImportResult>;
   // Utilities
   openPath: (path: string) => Promise<void>;
 }
@@ -213,6 +233,8 @@ const api: OroioAPI = {
   removeByokProvider: (provider: string) => ipcRenderer.invoke('byok:remove-provider', provider),
   discoverOpenAICompatible: (baseUrl: string, apiKey: string) => ipcRenderer.invoke('byok:openai-compatible:discover', baseUrl, apiKey),
   applyOpenAICompatible: (baseUrl: string, apiKey: string, modelIds: string[]) => ipcRenderer.invoke('byok:openai-compatible:apply', baseUrl, apiKey, modelIds),
+  exportByokConfig: () => ipcRenderer.invoke('byok:export'),
+  importByokConfig: (payload: unknown, force: boolean) => ipcRenderer.invoke('byok:import', payload, force),
   // Utilities
   openPath: (p: string) => ipcRenderer.invoke('util:openPath', p),
 };

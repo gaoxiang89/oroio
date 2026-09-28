@@ -19,6 +19,8 @@ import {
   applyOpenAICompatible,
   discoverOpenAICompatible,
   discoverProvider,
+  exportByokConfig,
+  importByokConfig,
   listCustomModels,
   listProviders,
   refreshProvider,
@@ -409,6 +411,8 @@ Droid instructions here.
   ipcMain.handle('byok:remove-provider', async (_event, provider: string) => removeProvider(provider));
   ipcMain.handle('byok:openai-compatible:discover', async (_event, baseUrl: string, apiKey: string) => discoverOpenAICompatible(baseUrl, apiKey));
   ipcMain.handle('byok:openai-compatible:apply', async (_event, baseUrl: string, apiKey: string, modelIds: string[]) => applyOpenAICompatible(baseUrl, apiKey, modelIds));
+  ipcMain.handle('byok:export', async () => exportByokConfig());
+  ipcMain.handle('byok:import', async (_event, payload: unknown, force: boolean) => importByokConfig(payload, force));
 
   // Utility handlers
   ipcMain.handle('util:openPath', async (_event, filePath: string): Promise<void> => {

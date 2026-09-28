@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, Plus, Trash2, Cpu, Copy, Check, Pencil, ChevronRight, ChevronDown, Eye, EyeOff, Brain, AlertCircle, X, KeyRound, Globe2 } from 'lucide-react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import type { ChangeEvent } from 'react';
+import { RefreshCw, Plus, Trash2, Cpu, Copy, Check, Pencil, ChevronRight, ChevronDown, Eye, EyeOff, Brain, AlertCircle, X, KeyRound, Globe2, Download, Upload } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -28,6 +29,8 @@ import {
   applyOpenAICompatible,
   discoverByok,
   discoverOpenAICompatible,
+  exportByokConfig,
+  importByokConfig,
   listByokProviders,
   listCustomModels,
   refreshByokProvider,
@@ -236,6 +239,9 @@ export default function ByokManager() {
   const [selectedModelIds, setSelectedModelIds] = useState<Set<string>>(new Set());
   const [quickBusy, setQuickBusy] = useState(false);
   const [providerToRemove, setProviderToRemove] = useState<ByokProvider | null>(null);
+  const [ioBusy, setIoBusy] = useState(false);
+  const [importOffer, setImportOffer] = useState<{ payload: unknown; skipped: string[] } | null>(null);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
 
   const loadModels = useCallback(async () => {
     try {
@@ -366,6 +372,66 @@ export default function ByokManager() {
       showError(err instanceof Error ? err.message : 'Failed to refresh provider');
     } finally {
       setQuickBusy(false);
+    }
+  };
+
+  const handleExport = async () => {
+    try {
+      setIoBusy(true);
+      const result = await exportByokConfig();
+      const blob = new Blob([`${JSON.stringify(result.payload, null, 2)}\n`], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = 'oroio-byok-backup.json';
+      anchor.click();
+      URL.revokeObjectURL(url);
+      const count = Object.keys(result.providers).length;
+      toast.success(`Exported ${count} provider${count === 1 ? '' : 's'}`, {
+        description: 'The backup file contains plaintext API keys — store it safely.',
+      });
+    } catch (err) {
+      showError(err instanceof Error ? err.message : 'Failed to export BYOK config');
+    } finally {
+      setIoBusy(false);
+    }
+  };
+
+  const handleImportFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    try {
+      setIoBusy(true);
+      const payload: unknown = JSON.parse(await file.text());
+      const result = await importByokConfig(payload, false);
+      if (result.importedProviders.length > 0) {
+        toast.success(`Imported ${result.importedProviders.join(', ')}`);
+        await loadModels();
+      }
+      if (result.skippedProviders.length > 0) {
+        setImportOffer({ payload, skipped: result.skippedProviders });
+      }
+    } catch (err) {
+      showError(err instanceof Error ? err.message : 'Failed to import BYOK config');
+    } finally {
+      setIoBusy(false);
+    }
+  };
+
+  const handleImportForce = async () => {
+    if (!importOffer) return;
+    const { payload } = importOffer;
+    try {
+      setIoBusy(true);
+      const result = await importByokConfig(payload, true);
+      toast.success(`Imported ${result.importedProviders.join(', ') || 'no providers'}`);
+      await loadModels();
+    } catch (err) {
+      showError(err instanceof Error ? err.message : 'Failed to import BYOK config');
+    } finally {
+      setIoBusy(false);
+      setImportOffer(null);
     }
   };
 
@@ -562,6 +628,41 @@ export default function ByokManager() {
             Fetch models
           </Button>
         </div>
+      </section>
+
+      <section className="space-y-3">
+        <div>
+          <h2 className="text-sm font-semibold uppercase tracking-wider">Backup &amp; migrate</h2>
+          <p className="text-xs text-muted-foreground mt-1">Move your configured BYOK providers between machines with one export file.</p>
+        </div>
+        <div className="border border-border bg-card p-4 flex flex-col gap-3 md:flex-row md:items-center">
+          <div className="h-9 w-9 border border-border flex items-center justify-center shrink-0">
+            <Download className="h-4 w-4 text-primary" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="text-sm font-semibold">BYOK config file</h3>
+            <p className="text-xs text-muted-foreground mt-1">
+              The export contains plaintext API keys and the same format used by <code>dk byok export</code>. Store it safely and delete it after importing.
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" className="h-8 text-xs" onClick={handleExport} disabled={ioBusy}>
+              <Download className={`h-3.5 w-3.5 mr-1.5 ${ioBusy ? 'animate-pulse' : ''}`} />
+              Export
+            </Button>
+            <Button size="sm" className="h-8 text-xs" onClick={() => importInputRef.current?.click()} disabled={ioBusy}>
+              <Upload className="h-3.5 w-3.5 mr-1.5" />
+              Import
+            </Button>
+          </div>
+        </div>
+        <input
+          ref={importInputRef}
+          type="file"
+          accept=".json,application/json"
+          className="hidden"
+          onChange={handleImportFile}
+        />
       </section>
 
       <div className="border-t border-border pt-5">
@@ -985,6 +1086,23 @@ export default function ByokManager() {
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={handleRemoveProvider} className="bg-destructive hover:bg-destructive/90">
               Remove provider
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={importOffer !== null} onOpenChange={(open) => !open && setImportOffer(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Overwrite configured providers?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {importOffer?.skipped.join(', ')} {'are already configured. Overwrite their models and API keys with the imported file, or keep the existing setup?'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep existing</AlertDialogCancel>
+            <AlertDialogAction onClick={handleImportForce}>
+              Overwrite with import
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -87,6 +87,8 @@ Commands:
   serve [start|stop|status]  web dashboard (automatic port; DKM_SERVE_PORT to override)
   byok setup [glm|deepseek|kimi]  configure an official BYOK provider
   byok list|refresh [provider]|remove <provider>
+  byok export [--force] <file>   export BYOK config (contains plaintext keys)
+  byok import [--force] <file>   import BYOK config from an export file
   config                 interactive configuration menu
   uninstall [options]    uninstall dk (wrapper around uninstall.sh)
   reinstall [options]    reinstall dk (wrapper around reinstall.sh)

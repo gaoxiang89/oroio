@@ -727,13 +727,16 @@ def _sync(
     known_models = [dict(model) for model in discovered_models]
     for model_id in unavailable:
         known_models.append(dict(old_known_by_id.get(model_id, {"id": model_id, "displayName": model_id})))
-    metadata["providers"][provider_id] = {
+    provider_state_entry: dict[str, Any] = {
         "managedModels": selected,
         "locations": locations,
         "knownModels": known_models,
         "lastDiscoveredAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "unavailable": unavailable,
     }
+    if provider.get("baseUrl"):
+        provider_state_entry["baseUrl"] = provider["baseUrl"]
+    metadata["providers"][provider_id] = provider_state_entry
 
     _atomic_write_json(settings_path, settings)
     if legacy_path.exists() or any(source == "legacy" for source in locations.values()):
@@ -931,6 +934,307 @@ def remove_provider(
     return {"success": True, "provider": provider_id, "removedModelIds": sorted(managed)}
 
 
+EXPORT_VERSION = 1
+OPENAI_COMPATIBLE_PREFIX = "openai-compatible:"
+IMPORT_ENTRY_KEYS = ("extraArgs", "extraHeaders")
+
+
+def _entry_current(entry: dict[str, Any], source: str) -> dict[str, Any]:
+    return dict(entry) if source == "settings" else _current_view(entry)
+
+
+def _export_payload(
+    provider_id: str,
+    provider: dict[str, Any],
+    saved: dict[str, Any],
+    found: dict[str, tuple[str, dict[str, Any]]],
+) -> dict[str, Any]:
+    managed = [model_id for model_id in _managed_ids(saved) if model_id in found]
+    models = [_entry_current(found[model_id][1], found[model_id][0]) for model_id in managed]
+    payload: dict[str, Any] = {
+        "name": provider.get("name", provider_id),
+        "baseUrl": provider["baseUrl"],
+        "managedModelIds": managed,
+        "models": models,
+    }
+    unavailable = saved.get("unavailable")
+    if isinstance(unavailable, list) and unavailable:
+        payload["unavailableModelIds"] = [item for item in unavailable if isinstance(item, str)]
+    if isinstance(saved.get("lastDiscoveredAt"), str):
+        payload["lastDiscoveredAt"] = saved["lastDiscoveredAt"]
+    return payload
+
+
+def _export_providers(
+    settings: dict[str, Any],
+    legacy: dict[str, Any],
+    metadata: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    rows_by_source = (
+        ("settings", _settings_models(settings)),
+        ("legacy", _legacy_models(legacy)),
+    )
+    claimed: set[int] = set()
+    result: dict[str, dict[str, Any]] = {}
+    deferred: list[tuple[str, dict[str, Any]]] = []
+
+    def scan(provider: dict[str, Any], saved: dict[str, Any]) -> dict[str, tuple[str, dict[str, Any]]]:
+        managed = set(_managed_ids(saved))
+        locations = saved.get("locations")
+        locations = locations if isinstance(locations, dict) else {}
+        found: dict[str, tuple[str, dict[str, Any]]] = {}
+        for source, rows in rows_by_source:
+            for entry in rows:
+                model_id = _model_id(entry)
+                if model_id not in managed or model_id in found or id(entry) in claimed:
+                    continue
+                expected = locations.get(model_id)
+                if expected in ("settings", "legacy") and expected != source:
+                    continue
+                if _entry_base_url(entry, source) == provider["baseUrl"]:
+                    found[model_id] = (source, entry)
+        return found
+
+    for provider_id, raw in metadata["providers"].items():
+        saved = raw if isinstance(raw, dict) else {}
+        if not _managed_ids(saved):
+            continue
+        provider = PROVIDERS.get(str(provider_id).lower())
+        if provider is None:
+            if str(provider_id).startswith(OPENAI_COMPATIBLE_PREFIX):
+                saved_url = saved.get("baseUrl")
+                if isinstance(saved_url, str) and saved_url:
+                    _, provider = _openai_compatible_provider(saved_url)
+                else:
+                    deferred.append((str(provider_id), saved))
+                    continue
+            else:
+                continue
+        found = scan(provider, saved)
+        if not found:
+            continue
+        for _source, entry in found.values():
+            claimed.add(id(entry))
+        result[str(provider_id)] = _export_payload(str(provider_id), provider, saved, found)
+
+    official_urls = {provider["baseUrl"] for provider in PROVIDERS.values()}
+    for provider_id, saved in deferred:
+        managed = set(_managed_ids(saved))
+        base_url = ""
+        found: dict[str, tuple[str, dict[str, Any]]] = {}
+        for source, rows in rows_by_source:
+            for entry in rows:
+                model_id = _model_id(entry)
+                if model_id not in managed or model_id in found or id(entry) in claimed:
+                    continue
+                url = _entry_base_url(entry, source)
+                if not url or url in official_urls:
+                    continue
+                if base_url and url != base_url:
+                    continue
+                base_url = url
+                found[model_id] = (source, entry)
+        if not found:
+            continue
+        _, provider = _openai_compatible_provider(base_url)
+        for _source, entry in found.values():
+            claimed.add(id(entry))
+        result[provider_id] = _export_payload(provider_id, provider, saved, found)
+    return result
+
+
+def export_config(
+    path: str | os.PathLike[str],
+    factory_dir: str | os.PathLike[str] | None = None,
+    oroio_dir: str | os.PathLike[str] | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Write every configured BYOK provider, including keys, to one JSON file."""
+    if not isinstance(path, (str, os.PathLike)) or not str(path).strip():
+        raise ByokError("invalid_path", "Enter an export file path.")
+    target = Path(path).expanduser()
+    if target.is_dir():
+        raise ByokError("invalid_path", f"Export target is a directory: {target}")
+    if target.exists() and not force:
+        raise ByokError("path_exists", f"File already exists: {target} (use --force to overwrite)")
+    settings_path, legacy_path, state_path = _paths(factory_dir, oroio_dir)
+    providers = _export_providers(_read_json(settings_path, {}), _read_json(legacy_path, {}), _state(state_path))
+    if not providers:
+        raise ByokError("not_configured", "No BYOK provider is configured yet.")
+    payload = {
+        "version": EXPORT_VERSION,
+        "exportedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "providers": providers,
+    }
+    _atomic_write_json(target, payload)
+    return {"success": True, "path": str(target), "providers": providers}
+
+
+def _import_provider(provider_id: Any, data: Any) -> tuple[str, dict[str, Any]]:
+    if not isinstance(data, dict):
+        raise ByokError("invalid_import", "Provider entries in the import file must be objects.")
+    if not isinstance(provider_id, str):
+        raise ByokError("invalid_import", f"Unknown provider in the import file: {provider_id}")
+    official = PROVIDERS.get(provider_id.lower())
+    if official is not None:
+        if data.get("baseUrl") != official["baseUrl"]:
+            raise ByokError(
+                "invalid_import",
+                f"Provider {official['id']} was exported with a different Base URL.",
+            )
+        return official["id"], official
+    if provider_id.startswith(OPENAI_COMPATIBLE_PREFIX):
+        base_url = data.get("baseUrl")
+        endpoint_id, provider = _openai_compatible_provider(base_url if isinstance(base_url, str) else "")
+        if endpoint_id != provider_id:
+            raise ByokError("invalid_import", "OpenAI-compatible provider id does not match its Base URL.")
+        return endpoint_id, provider
+    raise ByokError("invalid_import", f"Unknown provider in the import file: {provider_id}")
+
+
+def _sanitize_imported_entry(raw: Any, provider: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ByokError("invalid_import", "Model entries in the import file must be objects.")
+    model_id = raw.get("model")
+    api_key = raw.get("apiKey")
+    if not isinstance(model_id, str) or not model_id.strip():
+        raise ByokError("invalid_import", "A model entry in the import file has no model id.")
+    if not isinstance(api_key, str) or not api_key.strip():
+        raise ByokError("invalid_import", f"Model {model_id} has no API key.")
+    model_id = model_id.strip()
+    entry: dict[str, Any] = {
+        "model": model_id,
+        "displayName": model_id,
+        "baseUrl": provider["baseUrl"],
+        "apiKey": api_key,
+        "provider": provider["droidProvider"],
+    }
+    if provider.get("authMode"):
+        entry["authMode"] = provider["authMode"]
+    display = raw.get("displayName")
+    if isinstance(display, str) and display.strip():
+        entry["displayName"] = display.strip()
+    tokens = _as_positive_int(raw.get("maxOutputTokens"))
+    if tokens is not None:
+        entry["maxOutputTokens"] = tokens
+    if isinstance(raw.get("noImageSupport"), bool):
+        entry["noImageSupport"] = raw["noImageSupport"]
+    effort = raw.get("reasoningEffort")
+    if isinstance(effort, str) and effort in REASONING_EFFORTS - {"default"}:
+        entry["reasoningEffort"] = effort
+    if isinstance(raw.get("enableThinking"), bool):
+        entry["enableThinking"] = raw["enableThinking"]
+    thinking = _as_positive_int(raw.get("thinkingMaxTokens"))
+    if thinking is not None:
+        entry["thinkingMaxTokens"] = thinking
+    for key in IMPORT_ENTRY_KEYS:
+        value = raw.get(key)
+        if isinstance(value, dict):
+            entry[key] = value
+    base_model_id = _base_model_id(model_id)
+    if base_model_id:
+        entry["baseModelId"] = base_model_id
+    return entry
+
+
+def import_config(
+    path: str | os.PathLike[str],
+    factory_dir: str | os.PathLike[str] | None = None,
+    oroio_dir: str | os.PathLike[str] | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Restore BYOK providers from an export file; skip configured providers unless forced."""
+    if not isinstance(path, (str, os.PathLike)) or not str(path).strip():
+        raise ByokError("invalid_path", "Enter an import file path.")
+    source = Path(path).expanduser()
+    if not source.is_file():
+        raise ByokError("not_found", f"Import file not found: {source}")
+    try:
+        text = source.read_text(encoding="utf-8")
+        payload = json.loads(text) if text.strip() else None
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raise ByokError("invalid_import", f"Cannot read valid JSON from {source}.")
+    if (
+        not isinstance(payload, dict)
+        or payload.get("version") != EXPORT_VERSION
+        or not isinstance(payload.get("providers"), dict)
+        or not payload["providers"]
+    ):
+        raise ByokError("invalid_import", "The import file is not a valid BYOK export.")
+
+    settings_path, legacy_path, state_path = _paths(factory_dir, oroio_dir)
+    settings = _read_json(settings_path, {})
+    legacy = _read_json(legacy_path, {})
+    metadata = _state(state_path)
+    settings_rows = _settings_models(settings)
+    legacy_rows = _legacy_models(legacy)
+
+    imported: list[str] = []
+    skipped: list[str] = []
+    for raw_id, data in payload["providers"].items():
+        provider_id, provider = _import_provider(raw_id, data)
+        models_raw = data.get("models")
+        if not isinstance(models_raw, list) or not models_raw:
+            raise ByokError("invalid_import", f"Provider {raw_id} has no importable models.")
+        by_id: dict[str, dict[str, Any]] = {}
+        for item in models_raw:
+            entry = _sanitize_imported_entry(item, provider)
+            by_id.setdefault(entry["model"], entry)
+        unavailable_raw = data.get("unavailableModelIds")
+        unavailable = (
+            [item for item in unavailable_raw if isinstance(item, str) and item in by_id]
+            if isinstance(unavailable_raw, list) else []
+        )
+
+        saved = _provider_state(metadata, provider_id)
+        managed = _managed_ids(saved)
+        if managed and _find_managed_entries(provider, saved, settings, legacy) and not force:
+            skipped.append(provider_id)
+            continue
+
+        old_managed = set(managed)
+        settings_rows = [
+            entry for entry in settings_rows
+            if not (_model_id(entry) in old_managed and _entry_base_url(entry, "settings") == provider["baseUrl"])
+        ]
+        legacy_rows = [
+            entry for entry in legacy_rows
+            if not (_model_id(entry) in old_managed and _entry_base_url(entry, "legacy") == provider["baseUrl"])
+        ]
+        settings_rows.extend(by_id.values())
+        known_models = []
+        for entry in by_id.values():
+            item = {"id": entry["model"], "displayName": entry["displayName"]}
+            if "maxOutputTokens" in entry:
+                item["maxOutputTokens"] = entry["maxOutputTokens"]
+            if "noImageSupport" in entry:
+                item["supportsImages"] = not entry["noImageSupport"]
+            known_models.append(item)
+        state_entry: dict[str, Any] = {
+            "managedModels": list(by_id),
+            "locations": {model_id: "settings" for model_id in by_id},
+            "knownModels": known_models,
+            "lastDiscoveredAt": (
+                data["lastDiscoveredAt"]
+                if isinstance(data.get("lastDiscoveredAt"), str)
+                else datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            ),
+            "unavailable": unavailable,
+            "baseUrl": provider["baseUrl"],
+        }
+        metadata["providers"][provider_id] = state_entry
+        imported.append(provider_id)
+
+    if imported:
+        settings["customModels"] = settings_rows
+        _atomic_write_json(settings_path, settings)
+        if legacy_path.exists():
+            legacy["custom_models"] = legacy_rows
+            _atomic_write_json(legacy_path, legacy)
+        _atomic_write_json(state_path, metadata)
+    return {"success": True, "importedProviders": imported, "skippedProviders": skipped}
+
+
 def list_custom_models(
     factory_dir: str | os.PathLike[str] | None = None,
 ) -> list[dict[str, Any]]:
@@ -1117,6 +1421,32 @@ def _cli_remove(provider_id: str) -> int:
     return 0
 
 
+def _cli_export(path: str | None, force: bool) -> int:
+    if not path:
+        raise ByokError("invalid_path", "用法: dk byok export [--force] <文件>")
+    result = export_config(path, force=force)
+    providers = result["providers"]
+    print(f"已导出 {len(providers)} 个平台配置到: {result['path']}")
+    for provider_id, payload in providers.items():
+        suffix = f"；不可用: {len(payload.get('unavailableModelIds', []))}" if payload.get("unavailableModelIds") else ""
+        print(f"  {provider_id}: {len(payload['models'])} 个模型{suffix}")
+    print("警告: 导出文件包含明文 API Key，请妥善保管并在使用后删除。")
+    return 0
+
+
+def _cli_import(path: str | None, force: bool) -> int:
+    if not path:
+        raise ByokError("invalid_path", "用法: dk byok import [--force] <文件>")
+    result = import_config(path, force=force)
+    for provider_id in result["importedProviders"]:
+        print(f"已导入 {provider_id}")
+    for provider_id in result["skippedProviders"]:
+        print(f"跳过 {provider_id}: 已配置（使用 --force 覆盖）")
+    if not result["importedProviders"]:
+        print("没有导入任何平台。")
+    return 0
+
+
 def cli_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="dk byok", description="配置官方 Coding Plan / API BYOK")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1127,6 +1457,12 @@ def cli_main(argv: list[str] | None = None) -> int:
     refresh_parser.add_argument("provider", nargs="?", choices=tuple(PROVIDERS))
     remove_parser = sub.add_parser("remove", help="删除平台配置")
     remove_parser.add_argument("provider", choices=tuple(PROVIDERS))
+    export_parser = sub.add_parser("export", help="导出 BYOK 配置到文件")
+    export_parser.add_argument("path")
+    export_parser.add_argument("--force", "-f", action="store_true", help="覆盖已存在的文件")
+    import_parser = sub.add_parser("import", help="从文件导入 BYOK 配置")
+    import_parser.add_argument("path")
+    import_parser.add_argument("--force", "-f", action="store_true", help="覆盖已配置的平台")
     args = parser.parse_args(argv)
     if args.command == "setup":
         return _cli_setup(args.provider)
@@ -1136,6 +1472,10 @@ def cli_main(argv: list[str] | None = None) -> int:
         return _cli_refresh(args.provider)
     if args.command == "remove":
         return _cli_remove(args.provider)
+    if args.command == "export":
+        return _cli_export(args.path, args.force)
+    if args.command == "import":
+        return _cli_import(args.path, args.force)
     return 2
 
 

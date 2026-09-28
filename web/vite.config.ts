@@ -11,6 +11,8 @@ import {
   applyOpenAICompatible,
   discoverOpenAICompatible,
   discoverProvider,
+  exportByokConfig,
+  importByokConfig,
   listCustomModels,
   listProviders,
   refreshProvider,
@@ -283,6 +285,12 @@ Command instructions here.
             }
             if (req.url === '/api/byok/openai-compatible/apply') {
               return sendJson(await applyOpenAICompatible(String(data.baseUrl || ''), String(data.apiKey || ''), data.modelIds || []))
+            }
+            if (req.url === '/api/byok/export') {
+              return sendJson(await exportByokConfig())
+            }
+            if (req.url === '/api/byok/import') {
+              return sendJson(await importByokConfig(data.payload, Boolean(data.force)))
             }
             
             // DK config

@@ -590,6 +590,34 @@ export async function applyOpenAICompatible(
   );
 }
 
+export interface ByokExportFile {
+  version: number;
+  exportedAt: string;
+  providers: Record<string, unknown>;
+}
+
+export interface ByokExportResult {
+  success: true;
+  payload: ByokExportFile;
+  providers: Record<string, { managedModelIds: string[] }>;
+}
+
+export interface ByokImportResult {
+  success: true;
+  importedProviders: string[];
+  skippedProviders: string[];
+}
+
+export async function exportByokConfig(): Promise<ByokExportResult> {
+  if (isElectron) return window.oroio.exportByokConfig();
+  return byokPost<ByokExportResult>('/api/byok/export');
+}
+
+export async function importByokConfig(payload: unknown, force = false): Promise<ByokImportResult> {
+  if (isElectron) return window.oroio.importByokConfig(payload, force);
+  return byokPost<ByokImportResult>('/api/byok/import', { payload, force });
+}
+
 // dk CLI check (Electron only)
 export async function checkDk(): Promise<DkCheckResult | null> {
   if (!isElectron) {
@@ -689,6 +717,8 @@ declare global {
       removeByokProvider: (provider: string) => Promise<{ success: true; provider: string; removedModelIds: string[] }>;
       discoverOpenAICompatible: (baseUrl: string, apiKey: string) => Promise<ByokDiscovery & { baseUrl: string }>;
       applyOpenAICompatible: (baseUrl: string, apiKey: string, modelIds: string[]) => Promise<ByokApplyResult & { baseUrl: string }>;
+      exportByokConfig: () => Promise<ByokExportResult>;
+      importByokConfig: (payload: unknown, force: boolean) => Promise<ByokImportResult>;
       // Utilities
       openPath: (path: string) => Promise<void>;
     };
