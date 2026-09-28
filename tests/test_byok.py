@@ -60,6 +60,13 @@ class ByokTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(value))
 
+    def test_empty_json_config_files_are_treated_as_unconfigured(self):
+        self.factory.mkdir(parents=True)
+        (self.factory / "settings.json").write_text("")
+        (self.factory / "config.json").write_text(" \n")
+        rows = byok.list_providers(self.factory, self.oroio)
+        self.assertTrue(all(not row["configured"] for row in rows))
+
     def models(self, *rows):
         return opener_for({"object": "list", "data": list(rows)})
 
@@ -444,6 +451,52 @@ class ByokTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertNotIn(secret, output.getvalue())
         apply_mock.assert_called_once_with("glm", secret, ["glm-code"])
+
+    def test_cli_kimi_setup_prefers_environment_key_without_printing_it(self):
+        secret = "kimi-environment-secret"
+        fake_stdin = mock.Mock()
+        fake_stdin.isatty.return_value = True
+        discovered = {
+            "success": True,
+            "provider": "kimi",
+            "configured": False,
+            "models": [{"id": "kimi-code", "displayName": "Kimi Code", "selected": True}],
+        }
+        output = io.StringIO()
+        with mock.patch.object(sys, "stdin", fake_stdin), mock.patch.object(sys, "stdout", output), \
+             mock.patch.dict(os.environ, {"KIMI_CODING_API_KEY": secret}), \
+             mock.patch("byok.getpass.getpass") as getpass_mock, \
+             mock.patch("byok.list_providers", return_value=[{"id": "kimi", "configured": False}]), \
+             mock.patch("byok.discover", return_value=discovered) as discover_mock, \
+             mock.patch("byok.apply") as apply_mock, mock.patch("builtins.input", return_value=""):
+            result = byok._cli_setup("kimi")
+        self.assertEqual(result, 0)
+        getpass_mock.assert_not_called()
+        discover_mock.assert_called_once_with("kimi", secret)
+        apply_mock.assert_called_once_with("kimi", secret, ["kimi-code"])
+        self.assertIn("KIMI_CODING_API_KEY", output.getvalue())
+        self.assertNotIn(secret, output.getvalue())
+
+    def test_cli_kimi_setup_prompts_when_environment_key_is_blank(self):
+        secret = "prompted-kimi-secret"
+        fake_stdin = mock.Mock()
+        fake_stdin.isatty.return_value = True
+        discovered = {
+            "success": True,
+            "provider": "kimi",
+            "configured": False,
+            "models": [{"id": "kimi-code", "displayName": "Kimi Code", "selected": True}],
+        }
+        with mock.patch.object(sys, "stdin", fake_stdin), mock.patch.object(sys, "stdout", io.StringIO()), \
+             mock.patch.dict(os.environ, {"KIMI_CODING_API_KEY": "   "}), \
+             mock.patch("byok.getpass.getpass", return_value=secret) as getpass_mock, \
+             mock.patch("byok.list_providers", return_value=[{"id": "kimi", "configured": False}]), \
+             mock.patch("byok.discover", return_value=discovered), mock.patch("byok.apply") as apply_mock, \
+             mock.patch("builtins.input", return_value=""):
+            result = byok._cli_setup("kimi")
+        self.assertEqual(result, 0)
+        getpass_mock.assert_called_once()
+        apply_mock.assert_called_once_with("kimi", secret, ["kimi-code"])
 
     def test_cli_refresh_and_remove(self):
         output = io.StringIO()

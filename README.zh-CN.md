@@ -101,6 +101,20 @@ dk byok refresh glm
 dk byok remove glm
 ```
 
+配置 Kimi Code Plan 时，`dk byok setup kimi` 会优先读取非空的
+`KIMI_CODING_API_KEY`。CLI 只提示变量名，不输出变量值；变量未设置或为空时，
+仍会显示隐藏输入的 API Key 提示。
+
+```bash
+export KIMI_CODING_API_KEY='your-key'  # Linux / macOS / WSL
+dk byok setup kimi
+```
+
+```powershell
+$env:KIMI_CODING_API_KEY = 'your-key'  # Windows PowerShell
+dk byok setup kimi
+```
+
 Web 控制台和桌面端也提供相同的三张快捷配置卡片。识别到 GLM、DeepSeek 或 Kimi 模型后，会关联 Droid 内置模型能力，配置完成后可在 `/model` 中继续选择该模型支持的思考等级。配置前会直接调用平台官方模型接口验证 Key；验证或刷新失败时不会修改已有配置。刷新时，已有模型默认保持选中，新发现模型会突出显示但不自动选中；上游暂时消失的模型会标记为 unavailable 并继续保留，只有你明确取消勾选或删除平台后才会移除。
 
 BYOK 页面还提供 **OpenAI-compatible** 引导配置。输入 Base URL 和 API Key 后，oroio 会请求 `<Base URL>/models`，让你勾选返回的模型。识别到 OpenAI、Grok 4.6、GLM、DeepSeek 或 Kimi 模型 ID 时，会通过 Droid 的 `baseModelId` 关联内置模型能力，从而获得与官方模型相同的“先选模型、再选思考等级”流程。支持本地 HTTP 端点；为降低 Key 泄露风险，会拒绝重定向以及包含内嵌凭据、查询参数或 fragment 的 URL。

@@ -101,6 +101,20 @@ dk byok refresh glm
 dk byok remove glm
 ```
 
+For Kimi Code Plan, `dk byok setup kimi` uses `KIMI_CODING_API_KEY` when the
+variable contains a non-empty value. The CLI reports the variable name without
+printing its value; if it is unset or blank, the hidden API Key prompt remains.
+
+```bash
+export KIMI_CODING_API_KEY='your-key'  # Linux / macOS / WSL
+dk byok setup kimi
+```
+
+```powershell
+$env:KIMI_CODING_API_KEY = 'your-key'  # Windows PowerShell
+dk byok setup kimi
+```
+
 The same guided cards are available on the Web dashboard and in the desktop app. Recognized GLM, DeepSeek, and Kimi models are linked to Droid's built-in model profiles, so `/model` offers their supported reasoning levels after setup. Setup validates the key against the provider's official model endpoint before changing any local config. A refresh keeps currently managed models selected, highlights newly discovered models without selecting them, and retains upstream models marked unavailable until you explicitly deselect them or remove the provider.
 
 The BYOK page also includes an **OpenAI-compatible** guided setup. Enter a Base URL and API key; oroio requests `<Base URL>/models`, lets you select the returned models, and writes them with Droid's `generic-chat-completion-api` provider. Recognized OpenAI, Grok 4.6, GLM, DeepSeek, and Kimi model IDs are linked through Droid's `baseModelId`, enabling the same model-then-reasoning-level selection used by built-in models. Local HTTP endpoints are supported, while redirects and URLs containing embedded credentials, query parameters, or fragments are rejected to reduce credential leakage risk.

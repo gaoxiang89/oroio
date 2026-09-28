@@ -95,6 +95,7 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "id": "kimi",
         "name": "Kimi Code Plan",
         "description": "Moonshot Kimi models available to your Code Plan key.",
+        "apiKeyEnv": "KIMI_CODING_API_KEY",
         "modelsUrl": "https://api.kimi.com/coding/v1/models",
         "baseUrl": "https://api.kimi.com/coding/v1",
         "droidProvider": "generic-chat-completion-api",
@@ -132,7 +133,10 @@ def _read_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
     if not path.exists():
         return dict(default)
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+        if not text.strip():
+            return dict(default)
+        value = json.loads(text)
     except (OSError, UnicodeError, json.JSONDecodeError):
         raise ByokError("invalid_config", f"Cannot read valid JSON from {path}.")
     if not isinstance(value, dict):
@@ -1043,7 +1047,12 @@ def _cli_setup(provider_id: str | None) -> int:
         if answer not in ("y", "yes"):
             print("已取消。")
             return 0
-    key = getpass.getpass("API Key（输入隐藏）: ").strip()
+    env_name = provider.get("apiKeyEnv")
+    key = os.environ.get(env_name, "").strip() if env_name else ""
+    if key:
+        print(f"使用环境变量 {env_name} 中的 API Key。")
+    else:
+        key = getpass.getpass("API Key（输入隐藏）: ").strip()
     result = discover(provider_id, key)
     models = result["models"]
     defaults = [index for index, model in enumerate(models, 1) if model.get("selected")]
