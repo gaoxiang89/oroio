@@ -77,6 +77,7 @@ Here's what `dk list` looks like:
 | `dk byok export [--force] <path>` | Export BYOK config (contains plaintext keys) |
 | `dk byok import [--force] <path>` | Import BYOK config from an export file |
 | `dk config`            | Configure CLI options (border style, etc.)  |
+| `dk version`           | Show the installed CLI version              |
 | `dk reinstall`         | Update to latest version                    |
 | `dk uninstall`         | Remove dk                                   |
 

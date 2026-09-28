@@ -18,6 +18,7 @@ if ($args.Count -ge 1) {
 $ErrorActionPreference = "Stop"
 
 # Configuration
+$script:DKM_VERSION = "1.0.1"
 $script:OROIO_DIR = Join-Path $env:USERPROFILE ".oroio"
 $script:KEYS_FILE = Join-Path $script:OROIO_DIR "keys.enc"
 $script:CURRENT_FILE = Join-Path $script:OROIO_DIR "current"
@@ -50,6 +51,7 @@ Commands:
   rm <index...>          remove keys
   reinstall              update to latest version
   uninstall              remove dk
+  version                show version
   help                   show this help
 "@
 }
@@ -1309,6 +1311,9 @@ switch ($Command) {
     "del" { Cmd-Remove -RmArgs $Arguments }
     "reinstall" { Cmd-Reinstall }
     "uninstall" { Cmd-Uninstall }
+    "version" { Write-Host "dk $script:DKM_VERSION" }
+    "-v" { Write-Host "dk $script:DKM_VERSION" }
+    "--version" { Write-Host "dk $script:DKM_VERSION" }
     "help" { Show-Usage }
     "-h" { Show-Usage }
     "--help" { Show-Usage }

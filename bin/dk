@@ -2,6 +2,7 @@
 # droid key manager: 管理 Factory droid API keys、查询用量、自动轮换
 set -euo pipefail
 
+DKM_VERSION="1.0.1"
 DKM_HOME="$HOME/.oroio"
 KEYS_ENC_FILE="$DKM_HOME/keys.enc"   # 加密存储的 keys
 CURRENT_FILE="$DKM_HOME/current"     # 保存当前key的行号（从1开始）
@@ -93,6 +94,7 @@ Commands:
   uninstall [options]    uninstall dk (wrapper around uninstall.sh)
   reinstall [options]    reinstall dk (wrapper around reinstall.sh)
   rm <index...>          remove keys
+  version                show version
   help                   show this help
 EOF
 }
@@ -1884,6 +1886,7 @@ main() {
     rm|remove|del) cmd_rm "$@";;
     uninstall) cmd_uninstall "$@";;
     reinstall) cmd_reinstall "$@";;
+    version|-v|--version) printf 'dk %s\n' "$DKM_VERSION";;
     help|-h|--help) usage;;
     *) die "未知命令: $cmd";;
   esac

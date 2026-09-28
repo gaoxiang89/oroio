@@ -1,6 +1,6 @@
 {
   "name": "oroio-desktop",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "oroio Desktop - Factory Droid API Key Manager",
   "main": "dist/main/index.js",
   "author": "gaoxiang89",

@@ -77,6 +77,7 @@ droid
 | `dk byok export [--force] <路径>` | 导出 BYOK 配置（含明文 Key） |
 | `dk byok import [--force] <路径>` | 从导出文件导入 BYOK 配置      |
 | `dk config`            | 配置 CLI 选项（边框样式等）      |
+| `dk version`           | 显示已安装的 CLI 版本            |
 | `dk reinstall`         | 更新到最新版本                   |
 | `dk uninstall`         | 卸载 dk                          |
 
