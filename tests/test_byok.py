@@ -123,32 +123,112 @@ class ByokTests(unittest.TestCase):
         self.assertNotIn("custom-secret", json.dumps(result))
 
     def test_openai_compatible_apply_syncs_selected_models(self):
-        payload = {"data": [{"id": "model-a"}, {"id": "model-b"}]}
+        payload = {"data": [{"id": "gpt-5.6"}, {"id": "grok-4.6"}]}
         byok.apply_openai_compatible(
             "https://api.example.test/v1",
             "first-key",
-            ["model-a", "model-b"],
+            ["gpt-5.6", "grok-4.6"],
             self.factory,
             self.oroio,
             opener=opener_for(payload),
         )
         settings = self.read(self.factory / "settings.json")
-        self.assertEqual([row["model"] for row in settings["customModels"]], ["model-a", "model-b"])
+        self.assertEqual([row["model"] for row in settings["customModels"]], ["gpt-5.6", "grok-4.6"])
         self.assertTrue(all(row["baseUrl"] == "https://api.example.test/v1" for row in settings["customModels"]))
         self.assertTrue(all(row["provider"] == "generic-chat-completion-api" for row in settings["customModels"]))
+        self.assertEqual(settings["customModels"][0]["baseModelId"], "gpt-5.6-sol")
+        self.assertNotIn("reasoningEffort", settings["customModels"][1])
+        self.assertEqual(settings["customModels"][1]["baseModelId"], "grok-4.6")
+
+        discovered = byok.discover_openai_compatible(
+            "https://api.example.test/v1",
+            "first-key",
+            self.factory,
+            self.oroio,
+            opener=opener_for(payload),
+        )
+        self.assertEqual(discovered["models"][0]["reasoningEfforts"], ["none", "low", "medium", "high", "xhigh", "max"])
 
         byok.apply_openai_compatible(
             "https://api.example.test/v1/",
             "replacement-key",
-            ["model-b"],
+            ["grok-4.6"],
             self.factory,
             self.oroio,
             opener=opener_for(payload),
         )
         settings = self.read(self.factory / "settings.json")
-        self.assertEqual([row["model"] for row in settings["customModels"]], ["model-b"])
+        self.assertEqual([row["model"] for row in settings["customModels"]], ["grok-4.6"])
         self.assertEqual(settings["customModels"][0]["apiKey"], "replacement-key")
         self.assertNotIn("replacement-key", (self.oroio / "byok.json").read_text())
+
+    def test_official_providers_write_droid_base_model_for_reasoning_selector(self):
+        cases = [
+            ("glm", "glm-5.3", "max"),
+            ("deepseek", "deepseek-v4-pro", "high"),
+            ("kimi", "kimi-k3", "low"),
+        ]
+        for provider, model_id, effort in cases:
+            with self.subTest(provider=provider):
+                factory = self.factory / provider
+                oroio = self.oroio / provider
+                discovery = byok.discover(
+                    provider,
+                    "test-key",
+                    factory,
+                    oroio,
+                    opener=self.models({"id": model_id}),
+                )
+                self.assertIn(effort, discovery["models"][0]["reasoningEfforts"])
+                byok.apply(
+                    provider,
+                    "test-key",
+                    [model_id],
+                    factory,
+                    oroio,
+                    opener=self.models({"id": model_id}),
+                )
+                entry = self.read(factory / "settings.json")["customModels"][0]
+                self.assertEqual(entry["baseModelId"], model_id)
+
+    def test_reasoning_profiles_cover_gpt_aliases_and_only_recognized_models(self):
+        payload = {
+            "data": [
+                {"id": "openai/gpt-5.5"},
+                {"id": "gpt-5.6-latest"},
+                {"id": "xai/grok-4.6-fast"},
+                {"id": "glm-future-model"},
+            ]
+        }
+        discovered = byok.discover_openai_compatible(
+            "https://api.example.test/v1",
+            "test-key",
+            self.factory,
+            self.oroio,
+            opener=opener_for(payload),
+        )
+        models = {model["id"]: model for model in discovered["models"]}
+        self.assertEqual(models["openai/gpt-5.5"]["reasoningEfforts"], ["low", "medium", "high", "xhigh"])
+        self.assertEqual(models["gpt-5.6-latest"]["reasoningEfforts"], ["none", "low", "medium", "high", "xhigh", "max"])
+        self.assertEqual(models["xai/grok-4.6-fast"]["reasoningEfforts"], ["low", "medium", "high", "xhigh"])
+        self.assertNotIn("reasoningEfforts", models["glm-future-model"])
+
+        byok.apply_openai_compatible(
+            "https://api.example.test/v1",
+            "test-key",
+            list(models),
+            self.factory,
+            self.oroio,
+            opener=opener_for(payload),
+        )
+        entries = {
+            entry["model"]: entry
+            for entry in self.read(self.factory / "settings.json")["customModels"]
+        }
+        self.assertEqual(entries["openai/gpt-5.5"]["baseModelId"], "gpt-5.5")
+        self.assertEqual(entries["gpt-5.6-latest"]["baseModelId"], "gpt-5.6-sol")
+        self.assertEqual(entries["xai/grok-4.6-fast"]["baseModelId"], "grok-4.6")
+        self.assertNotIn("baseModelId", entries["glm-future-model"])
 
     def test_openai_compatible_rejects_unsafe_base_urls(self):
         invalid = [

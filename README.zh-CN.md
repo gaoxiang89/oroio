@@ -101,9 +101,9 @@ dk byok refresh glm
 dk byok remove glm
 ```
 
-Web 控制台和桌面端也提供相同的三张快捷配置卡片。配置前会直接调用平台官方模型接口验证 Key；验证或刷新失败时不会修改已有配置。刷新时，已有模型默认保持选中，新发现模型会突出显示但不自动选中；上游暂时消失的模型会标记为 unavailable 并继续保留，只有你明确取消勾选或删除平台后才会移除。
+Web 控制台和桌面端也提供相同的三张快捷配置卡片。识别到 GLM、DeepSeek 或 Kimi 模型后，会关联 Droid 内置模型能力，配置完成后可在 `/model` 中继续选择该模型支持的思考等级。配置前会直接调用平台官方模型接口验证 Key；验证或刷新失败时不会修改已有配置。刷新时，已有模型默认保持选中，新发现模型会突出显示但不自动选中；上游暂时消失的模型会标记为 unavailable 并继续保留，只有你明确取消勾选或删除平台后才会移除。
 
-BYOK 页面还提供 **OpenAI-compatible** 引导配置。输入 Base URL 和 API Key 后，oroio 会请求 `<Base URL>/models`，让你勾选返回的模型，并使用 Droid 的 `generic-chat-completion-api` provider 写入配置。支持本地 HTTP 端点；为降低 Key 泄露风险，会拒绝重定向以及包含内嵌凭据、查询参数或 fragment 的 URL。
+BYOK 页面还提供 **OpenAI-compatible** 引导配置。输入 Base URL 和 API Key 后，oroio 会请求 `<Base URL>/models`，让你勾选返回的模型。识别到 OpenAI、Grok 4.6、GLM、DeepSeek 或 Kimi 模型 ID 时，会通过 Droid 的 `baseModelId` 关联内置模型能力，从而获得与官方模型相同的“先选模型、再选思考等级”流程。支持本地 HTTP 端点；为降低 Key 泄露风险，会拒绝重定向以及包含内嵌凭据、查询参数或 fragment 的 URL。
 
 新配置使用 Droid 当前的 `~/.factory/settings.json` / `customModels` 格式。已有的 `~/.factory/config.json` 旧格式条目仍在原文件中编辑，不会被自动迁移。oroio 会在 `~/.oroio/byok.json` 保存平台管理状态，但不会在其中重复保存 API Key，且会保留 Factory 配置里的其他未知字段。
 

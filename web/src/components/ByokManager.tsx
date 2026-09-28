@@ -93,6 +93,17 @@ const SUMMARY_OPTIONS = [
   { value: 'concise', label: 'Concise' },
 ];
 
+const REASONING_LABELS: Record<string, string> = {
+  none: 'None',
+  off: 'Off',
+  minimal: 'Minimal',
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  xhigh: 'X-High',
+  max: 'Max',
+};
+
 interface FormState {
   model_display_name: string;
   model: string;
@@ -132,6 +143,11 @@ function parseModelToForm(model: CustomModel): FormState {
     thinking_level: 'high',
     thinking_summary: 'detailed',
   };
+
+  if (model.reasoning_effort) {
+    form.thinking_enabled = !['none', 'off'].includes(model.reasoning_effort);
+    form.thinking_level = model.reasoning_effort;
+  }
 
   const extraArgs = model.extra_args as Record<string, unknown> | undefined;
   if (extraArgs) {
@@ -447,6 +463,7 @@ export default function ByokManager() {
   };
 
   const hasThinking = (model: CustomModel) => {
+    if (model.reasoning_effort) return !['none', 'off'].includes(model.reasoning_effort);
     const extraArgs = model.extra_args as Record<string, unknown> | undefined;
     if (!extraArgs) return false;
     if (model.provider === 'openai' && extraArgs.reasoning) {
@@ -692,7 +709,7 @@ export default function ByokManager() {
                 ? quickMode === 'openai-compatible'
                   ? 'The local backend fetches Base URL + /models. The key is stored only in your local Droid settings.'
                   : 'Your key is validated directly against the provider and stored only in your local Droid settings.'
-                : 'Select the models to manage. Unavailable models stay selected until you explicitly remove them.'}
+                : 'Select models to manage. Recognized models use Droid’s built-in reasoning-level selector after setup.'}
             </DialogDescription>
           </DialogHeader>
 
@@ -753,6 +770,11 @@ export default function ByokManager() {
                         {model.isNew && <Badge variant="secondary" className="text-[10px]">New</Badge>}
                         {model.unavailable && <Badge variant="outline" className="text-[10px] text-amber-600 border-amber-500/50">Unavailable</Badge>}
                         {model.supportsReasoning && <Badge variant="outline" className="text-[10px]">Reasoning</Badge>}
+                        {Boolean(model.reasoningEfforts?.length) && (
+                          <Badge variant="outline" className="text-[10px]">
+                            {model.reasoningEfforts?.map(effort => REASONING_LABELS[effort] || effort).join(' / ')}
+                          </Badge>
+                        )}
                         {model.supportsImages && <Badge variant="outline" className="text-[10px]">Vision</Badge>}
                       </span>
                       <span className="block text-[11px] text-muted-foreground mt-1 break-all">

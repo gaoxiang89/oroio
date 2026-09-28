@@ -10,6 +10,51 @@ const LEGACY_PATH = path.join(FACTORY_DIR, 'config.json');
 const STATE_PATH = path.join(OROIO_DIR, 'byok.json');
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 12_000;
+const REASONING_EFFORTS = new Set([
+  'default', 'none', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max',
+]);
+const MODEL_REASONING_PROFILES: Record<string, { efforts: string[]; defaultEffort: string }> = {
+  'gpt-5-2025-08-07': { efforts: ['low', 'medium', 'high'], defaultEffort: 'medium' },
+  'gpt-5-mini-2025-08-07': { efforts: ['low', 'medium', 'high'], defaultEffort: 'medium' },
+  'gpt-5-nano-2025-08-07': { efforts: ['low', 'medium', 'high'], defaultEffort: 'medium' },
+  'gpt-5-codex': { efforts: ['low', 'medium', 'high'], defaultEffort: 'medium' },
+  'gpt-5.1': { efforts: ['none', 'low', 'medium', 'high'], defaultEffort: 'none' },
+  'gpt-5.1-codex': { efforts: ['low', 'medium', 'high'], defaultEffort: 'medium' },
+  'gpt-5.1-codex-max': { efforts: ['low', 'medium', 'high', 'xhigh'], defaultEffort: 'medium' },
+  'gpt-5.2': { efforts: ['off', 'low', 'medium', 'high', 'xhigh'], defaultEffort: 'low' },
+  'gpt-5.2-codex': { efforts: ['low', 'medium', 'high', 'xhigh'], defaultEffort: 'medium' },
+  'gpt-5.3-codex': { efforts: ['low', 'medium', 'high', 'xhigh'], defaultEffort: 'medium' },
+  'gpt-5.3-codex-fast': { efforts: ['low', 'medium', 'high', 'xhigh'], defaultEffort: 'medium' },
+  'gpt-5.4': { efforts: ['low', 'medium', 'high', 'xhigh'], defaultEffort: 'medium' },
+  'gpt-5.4-fast': { efforts: ['low', 'medium', 'high', 'xhigh'], defaultEffort: 'medium' },
+  'gpt-5.4-mini': { efforts: ['low', 'medium', 'high', 'xhigh'], defaultEffort: 'high' },
+  'gpt-5.4-mini-fast': { efforts: ['low', 'medium', 'high', 'xhigh'], defaultEffort: 'high' },
+  'gpt-5.5': { efforts: ['low', 'medium', 'high', 'xhigh'], defaultEffort: 'medium' },
+  'gpt-5.5-fast': { efforts: ['low', 'medium', 'high', 'xhigh'], defaultEffort: 'medium' },
+  'gpt-5.5-pro': { efforts: ['medium', 'high', 'xhigh'], defaultEffort: 'medium' },
+  'gpt-5.6-sol': { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'medium' },
+  'gpt-5.6-sol-fast': { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'medium' },
+  'gpt-5.6-terra': { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'medium' },
+  'gpt-5.6-terra-flex': { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'medium' },
+  'gpt-5.6-luna': { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'medium' },
+  'gpt-5.6-luna-flex': { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'medium' },
+  'grok-4.6': { efforts: ['low', 'medium', 'high', 'xhigh'], defaultEffort: 'high' },
+  'glm-4.6': { efforts: ['none'], defaultEffort: 'none' },
+  'glm-4.7': { efforts: ['none'], defaultEffort: 'none' },
+  'glm-5': { efforts: ['none'], defaultEffort: 'none' },
+  'glm-5.1': { efforts: ['off', 'high'], defaultEffort: 'high' },
+  'glm-5.2': { efforts: ['off', 'high', 'max'], defaultEffort: 'high' },
+  'glm-5.2-fast': { efforts: ['off', 'high', 'max'], defaultEffort: 'high' },
+  'glm-5.3': { efforts: ['low', 'high', 'max'], defaultEffort: 'max' },
+  'glm-5.3-flash': { efforts: ['low', 'high', 'max'], defaultEffort: 'high' },
+  'kimi-k2.5': { efforts: ['off', 'high'], defaultEffort: 'high' },
+  'kimi-k2.6': { efforts: ['off', 'high'], defaultEffort: 'high' },
+  'kimi-k2.7-code': { efforts: ['off', 'high'], defaultEffort: 'high' },
+  'kimi-k3': { efforts: ['off', 'low', 'high', 'max'], defaultEffort: 'high' },
+  'deepseek-v4.1-flash': { efforts: ['off', 'low', 'high', 'max'], defaultEffort: 'high' },
+  'deepseek-v4-flash-0731': { efforts: ['off', 'low', 'high', 'max'], defaultEffort: 'high' },
+  'deepseek-v4-pro': { efforts: ['off', 'low', 'high', 'max'], defaultEffort: 'high' },
+};
 
 type Source = 'settings' | 'legacy';
 type JsonObject = Record<string, unknown>;
@@ -47,6 +92,9 @@ export interface DiscoveredModel {
   selected?: boolean;
   isNew?: boolean;
   unavailable?: boolean;
+  reasoningEffort?: string;
+  reasoningEfforts?: string[];
+  defaultReasoningEffort?: string;
 }
 
 export interface DiscoveryResult {
@@ -87,6 +135,10 @@ export interface CustomModel {
   provider: 'anthropic' | 'openai' | 'generic-chat-completion-api';
   max_tokens?: number;
   supports_images?: boolean;
+  reasoning_effort?: string;
+  enable_thinking?: boolean;
+  thinking_max_tokens?: number;
+  base_model_id?: string;
   extra_args?: Record<string, unknown>;
   extra_headers?: Record<string, string>;
   [key: string]: unknown;
@@ -201,6 +253,34 @@ function entryBaseUrl(entry: JsonObject, source: Source): string {
 function entryApiKey(entry: JsonObject, source: Source): string {
   const value = entry[source === 'settings' ? 'apiKey' : 'api_key'];
   return typeof value === 'string' ? value : '';
+}
+
+function entryReasoningEffort(entry: JsonObject, source: Source): string | undefined {
+  const direct = entry[source === 'settings' ? 'reasoningEffort' : 'reasoning_effort'];
+  if (typeof direct === 'string' && REASONING_EFFORTS.has(direct) && direct !== 'default') return direct;
+  const extraArgs = entry[source === 'settings' ? 'extraArgs' : 'extra_args'];
+  if (!isObject(extraArgs) || typeof extraArgs.reasoning_effort !== 'string') return undefined;
+  return REASONING_EFFORTS.has(extraArgs.reasoning_effort) && extraArgs.reasoning_effort !== 'default'
+    ? extraArgs.reasoning_effort
+    : undefined;
+}
+
+function baseModelId(modelIdValue: string): string | undefined {
+  const normalized = modelIdValue.trim().toLowerCase();
+  const familyId = normalized.split('/').at(-1)!;
+  if (familyId === 'gpt-5.6' || familyId === 'gpt-5.6-latest') return 'gpt-5.6-sol';
+  if (MODEL_REASONING_PROFILES[familyId]) return familyId;
+  return Object.keys(MODEL_REASONING_PROFILES)
+    .sort((left, right) => right.length - left.length)
+    .find((candidate) => familyId.includes(candidate));
+}
+
+function reasoningProfile(modelIdValue: string): { efforts: string[]; defaultEffort: string; baseModelId?: string } | undefined {
+  const normalized = modelIdValue.trim().toLowerCase();
+  const familyId = normalized.split('/').at(-1)!;
+  const base = baseModelId(normalized);
+  const exact = MODEL_REASONING_PROFILES[base || familyId];
+  return exact ? { ...exact, ...(base ? { baseModelId: base } : {}) } : undefined;
 }
 
 function managedIds(state: ManagedProviderState): string[] {
@@ -361,6 +441,10 @@ function legacyView(entry: JsonObject, source: Source): CustomModel {
   };
   if (typeof entry.displayName === 'string') result.model_display_name = entry.displayName;
   if (typeof entry.maxOutputTokens === 'number') result.max_tokens = entry.maxOutputTokens;
+  if (typeof entry.reasoningEffort === 'string') result.reasoning_effort = entry.reasoningEffort;
+  if (typeof entry.enableThinking === 'boolean') result.enable_thinking = entry.enableThinking;
+  if (typeof entry.thinkingMaxTokens === 'number') result.thinking_max_tokens = entry.thinkingMaxTokens;
+  if (typeof entry.baseModelId === 'string') result.base_model_id = entry.baseModelId;
   if (isObject(entry.extraArgs)) result.extra_args = entry.extraArgs;
   if (isObject(entry.extraHeaders)) result.extra_headers = entry.extraHeaders as Record<string, string>;
   if (typeof entry.noImageSupport === 'boolean') result.supports_images = !entry.noImageSupport;
@@ -372,6 +456,8 @@ function currentView(model: CustomModel, previous: JsonObject = {}): JsonObject 
   const pairs: Array<[keyof CustomModel, string]> = [
     ['model', 'model'], ['model_display_name', 'displayName'], ['base_url', 'baseUrl'],
     ['api_key', 'apiKey'], ['provider', 'provider'], ['max_tokens', 'maxOutputTokens'],
+    ['reasoning_effort', 'reasoningEffort'], ['enable_thinking', 'enableThinking'],
+    ['thinking_max_tokens', 'thinkingMaxTokens'], ['base_model_id', 'baseModelId'],
     ['extra_args', 'extraArgs'], ['extra_headers', 'extraHeaders'],
   ];
   for (const [legacy, current] of pairs) if (model[legacy] !== undefined) result[current] = model[legacy];
@@ -460,20 +546,35 @@ function mergeDiscovery(
   const found = findManagedEntries(provider, saved, settings, legacy);
   const configured = managedModelIds.length > 0 && found.size > 0;
   const currentIds = new Set(models.map((model) => model.id));
-  const output = models.map((model) => ({
-    ...model,
-    selected: configured ? managedModelIds.includes(model.id) : Boolean(model.recommended),
-    isNew: configured && !managedModelIds.includes(model.id),
-    unavailable: false,
-  }));
+  const output = models.map((model) => {
+    const previous = found.get(model.id);
+    const profile = reasoningProfile(model.id);
+    return {
+      ...model,
+      ...(profile ? {
+        reasoningEfforts: profile.efforts,
+        defaultReasoningEffort: profile.defaultEffort,
+      } : {}),
+      ...(previous ? { reasoningEffort: entryReasoningEffort(previous[1], previous[0]) } : {}),
+      selected: configured ? managedModelIds.includes(model.id) : Boolean(model.recommended),
+      isNew: configured && !managedModelIds.includes(model.id),
+      unavailable: false,
+    };
+  });
   const known = new Map((saved.knownModels || []).map((model) => [model.id, model]));
   for (const id of managedModelIds) {
     if (currentIds.has(id)) continue;
     const previous = found.get(id);
     const view = previous ? legacyView(previous[1], previous[0]) : undefined;
+    const profile = reasoningProfile(id);
     output.push({
       ...(known.get(id) || { id, displayName: id }),
+      ...(profile ? {
+        reasoningEfforts: profile.efforts,
+        defaultReasoningEffort: profile.defaultEffort,
+      } : {}),
       displayName: view?.model_display_name || known.get(id)?.displayName || id,
+      ...(previous ? { reasoningEffort: entryReasoningEffort(previous[1], previous[0]) } : {}),
       selected: true,
       isNew: false,
       unavailable: true,
@@ -573,6 +674,8 @@ async function syncProvider(
     const model = discovered.get(id) || known.get(id) || { id, displayName: id };
     if (!discovered.has(id)) unavailable.push(id);
     const entry = makeEntry(provider, model, apiKey.trim(), source, previous?.[1]);
+    const profile = reasoningProfile(id);
+    if (source === 'settings' && profile?.baseModelId) entry.baseModelId = profile.baseModelId;
     if (source === 'settings') settingsRows.push(entry); else legacyRows.push(entry);
     locations[id] = source;
   }
@@ -650,7 +753,11 @@ export async function discoverOpenAICompatible(baseUrl: string, apiKey: string):
   };
 }
 
-export async function applyOpenAICompatible(baseUrl: string, apiKey: string, modelIds: string[]): Promise<ApplyResult & { baseUrl: string }> {
+export async function applyOpenAICompatible(
+  baseUrl: string,
+  apiKey: string,
+  modelIds: string[],
+): Promise<ApplyResult & { baseUrl: string }> {
   const provider = openAICompatibleProvider(baseUrl);
   const models = await downloadModels(provider, apiKey, true);
   return {

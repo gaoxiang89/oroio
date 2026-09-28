@@ -34,6 +34,10 @@ export interface CustomModel {
   provider: 'anthropic' | 'openai' | 'generic-chat-completion-api';
   max_tokens?: number;
   supports_images?: boolean;
+  reasoning_effort?: string;
+  enable_thinking?: boolean;
+  thinking_max_tokens?: number;
+  base_model_id?: string;
   extra_args?: Record<string, unknown>;
   extra_headers?: Record<string, string>;
 }
@@ -62,6 +66,9 @@ export interface ByokModel {
   selected?: boolean;
   isNew?: boolean;
   unavailable?: boolean;
+  reasoningEffort?: string;
+  reasoningEfforts?: string[];
+  defaultReasoningEffort?: string;
 }
 
 export interface ByokDiscovery {

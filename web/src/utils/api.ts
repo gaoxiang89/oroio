@@ -249,6 +249,10 @@ export interface CustomModel {
   provider: 'anthropic' | 'openai' | 'generic-chat-completion-api';
   max_tokens?: number;
   supports_images?: boolean;
+  reasoning_effort?: string;
+  enable_thinking?: boolean;
+  thinking_max_tokens?: number;
+  base_model_id?: string;
   extra_args?: Record<string, unknown>;
   extra_headers?: Record<string, string>;
 }
@@ -507,6 +511,9 @@ export interface ByokModel {
   selected?: boolean;
   isNew?: boolean;
   unavailable?: boolean;
+  reasoningEffort?: string;
+  reasoningEfforts?: string[];
+  defaultReasoningEffort?: string;
 }
 
 export interface ByokDiscovery {
@@ -571,9 +578,16 @@ export async function discoverOpenAICompatible(baseUrl: string, apiKey: string):
   return byokPost<ByokDiscovery & { baseUrl: string }>('/api/byok/openai-compatible/discover', { baseUrl, apiKey });
 }
 
-export async function applyOpenAICompatible(baseUrl: string, apiKey: string, modelIds: string[]): Promise<ByokApplyResult & { baseUrl: string }> {
+export async function applyOpenAICompatible(
+  baseUrl: string,
+  apiKey: string,
+  modelIds: string[],
+): Promise<ByokApplyResult & { baseUrl: string }> {
   if (isElectron) return window.oroio.applyOpenAICompatible(baseUrl, apiKey, modelIds);
-  return byokPost<ByokApplyResult & { baseUrl: string }>('/api/byok/openai-compatible/apply', { baseUrl, apiKey, modelIds });
+  return byokPost<ByokApplyResult & { baseUrl: string }>(
+    '/api/byok/openai-compatible/apply',
+    { baseUrl, apiKey, modelIds },
+  );
 }
 
 // dk CLI check (Electron only)

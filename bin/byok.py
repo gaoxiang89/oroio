@@ -25,6 +25,52 @@ from typing import Any, Callable, Iterable
 
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 REQUEST_TIMEOUT = 12
+REASONING_EFFORTS = {
+    "default", "none", "off", "minimal", "low", "medium", "high", "xhigh", "max"
+}
+
+MODEL_REASONING_PROFILES: dict[str, tuple[list[str], str]] = {
+    "gpt-5-2025-08-07": (["low", "medium", "high"], "medium"),
+    "gpt-5-mini-2025-08-07": (["low", "medium", "high"], "medium"),
+    "gpt-5-nano-2025-08-07": (["low", "medium", "high"], "medium"),
+    "gpt-5-codex": (["low", "medium", "high"], "medium"),
+    "gpt-5.1": (["none", "low", "medium", "high"], "none"),
+    "gpt-5.1-codex": (["low", "medium", "high"], "medium"),
+    "gpt-5.1-codex-max": (["low", "medium", "high", "xhigh"], "medium"),
+    "gpt-5.2": (["off", "low", "medium", "high", "xhigh"], "low"),
+    "gpt-5.2-codex": (["low", "medium", "high", "xhigh"], "medium"),
+    "gpt-5.3-codex": (["low", "medium", "high", "xhigh"], "medium"),
+    "gpt-5.3-codex-fast": (["low", "medium", "high", "xhigh"], "medium"),
+    "gpt-5.4": (["low", "medium", "high", "xhigh"], "medium"),
+    "gpt-5.4-fast": (["low", "medium", "high", "xhigh"], "medium"),
+    "gpt-5.4-mini": (["low", "medium", "high", "xhigh"], "high"),
+    "gpt-5.4-mini-fast": (["low", "medium", "high", "xhigh"], "high"),
+    "gpt-5.5": (["low", "medium", "high", "xhigh"], "medium"),
+    "gpt-5.5-fast": (["low", "medium", "high", "xhigh"], "medium"),
+    "gpt-5.5-pro": (["medium", "high", "xhigh"], "medium"),
+    "gpt-5.6-sol": (["none", "low", "medium", "high", "xhigh", "max"], "medium"),
+    "gpt-5.6-sol-fast": (["none", "low", "medium", "high", "xhigh", "max"], "medium"),
+    "gpt-5.6-terra": (["none", "low", "medium", "high", "xhigh", "max"], "medium"),
+    "gpt-5.6-terra-flex": (["none", "low", "medium", "high", "xhigh", "max"], "medium"),
+    "gpt-5.6-luna": (["none", "low", "medium", "high", "xhigh", "max"], "medium"),
+    "gpt-5.6-luna-flex": (["none", "low", "medium", "high", "xhigh", "max"], "medium"),
+    "grok-4.6": (["low", "medium", "high", "xhigh"], "high"),
+    "glm-4.6": (["none"], "none"),
+    "glm-4.7": (["none"], "none"),
+    "glm-5": (["none"], "none"),
+    "glm-5.1": (["off", "high"], "high"),
+    "glm-5.2": (["off", "high", "max"], "high"),
+    "glm-5.2-fast": (["off", "high", "max"], "high"),
+    "glm-5.3": (["low", "high", "max"], "max"),
+    "glm-5.3-flash": (["low", "high", "max"], "high"),
+    "kimi-k2.5": (["off", "high"], "high"),
+    "kimi-k2.6": (["off", "high"], "high"),
+    "kimi-k2.7-code": (["off", "high"], "high"),
+    "kimi-k3": (["off", "low", "high", "max"], "high"),
+    "deepseek-v4.1-flash": (["off", "low", "high", "max"], "high"),
+    "deepseek-v4-flash-0731": (["off", "low", "high", "max"], "high"),
+    "deepseek-v4-pro": (["off", "low", "high", "max"], "high"),
+}
 
 PROVIDERS: dict[str, dict[str, Any]] = {
     "glm": {
@@ -311,6 +357,54 @@ def _entry_api_key(entry: dict[str, Any], source: str) -> str:
     return str(entry.get("apiKey" if source == "settings" else "api_key", ""))
 
 
+def _entry_reasoning_effort(entry: dict[str, Any], source: str) -> str | None:
+    direct = entry.get("reasoningEffort" if source == "settings" else "reasoning_effort")
+    if isinstance(direct, str) and direct in REASONING_EFFORTS - {"default"}:
+        return direct
+    extra_args = entry.get("extraArgs" if source == "settings" else "extra_args")
+    if not isinstance(extra_args, dict):
+        return None
+    effort = extra_args.get("reasoning_effort")
+    return effort if isinstance(effort, str) and effort in REASONING_EFFORTS - {"default"} else None
+
+
+def _base_model_id(model_id: str) -> str | None:
+    normalized = model_id.strip().lower()
+    family_id = normalized.rsplit("/", 1)[-1]
+    aliases = {
+        "gpt-5.6": "gpt-5.6-sol",
+        "gpt-5.6-latest": "gpt-5.6-sol",
+    }
+    alias = aliases.get(family_id)
+    if alias:
+        return alias
+    if family_id in MODEL_REASONING_PROFILES:
+        return family_id
+    for candidate in sorted(MODEL_REASONING_PROFILES, key=len, reverse=True):
+        if candidate in family_id:
+            return candidate
+    return None
+
+
+def _reasoning_profile(model_id: str) -> dict[str, Any] | None:
+    normalized = model_id.strip().lower()
+    family_id = normalized.rsplit("/", 1)[-1]
+    base_model_id = _base_model_id(normalized)
+    profile_id = base_model_id or family_id
+    if profile_id not in MODEL_REASONING_PROFILES:
+        return None
+    efforts, default = MODEL_REASONING_PROFILES[profile_id]
+    return {"efforts": efforts, "default": default, "baseModelId": base_model_id}
+
+
+def _add_reasoning_profile(item: dict[str, Any]) -> None:
+    profile = _reasoning_profile(str(item.get("id", "")))
+    if not profile:
+        return
+    item["reasoningEfforts"] = profile["efforts"]
+    item["defaultReasoningEffort"] = profile["default"]
+
+
 def _legacy_view(entry: dict[str, Any], source: str) -> dict[str, Any]:
     if source == "legacy":
         return dict(entry)
@@ -323,6 +417,10 @@ def _legacy_view(entry: dict[str, Any], source: str) -> dict[str, Any]:
     mapping = {
         "displayName": "model_display_name",
         "maxOutputTokens": "max_tokens",
+        "reasoningEffort": "reasoning_effort",
+        "enableThinking": "enable_thinking",
+        "thinkingMaxTokens": "thinking_max_tokens",
+        "baseModelId": "base_model_id",
         "extraArgs": "extra_args",
         "extraHeaders": "extra_headers",
     }
@@ -343,6 +441,10 @@ def _current_view(entry: dict[str, Any], previous: dict[str, Any] | None = None)
         "api_key": "apiKey",
         "provider": "provider",
         "max_tokens": "maxOutputTokens",
+        "reasoning_effort": "reasoningEffort",
+        "enable_thinking": "enableThinking",
+        "thinking_max_tokens": "thinkingMaxTokens",
+        "base_model_id": "baseModelId",
         "extra_args": "extraArgs",
         "extra_headers": "extraHeaders",
     }
@@ -431,6 +533,12 @@ def _merge_discovery(
     output: list[dict[str, Any]] = []
     for model in models:
         item = dict(model)
+        _add_reasoning_profile(item)
+        source_entry = found.get(model["id"])
+        if source_entry:
+            effort = _entry_reasoning_effort(source_entry[1], source_entry[0])
+            if effort:
+                item["reasoningEffort"] = effort
         item["selected"] = model["id"] in managed if configured else bool(model.get("recommended"))
         item["isNew"] = configured and model["id"] not in managed
         item["unavailable"] = False
@@ -446,12 +554,16 @@ def _merge_discovery(
         if model_id in current_ids:
             continue
         item = dict(known_by_id.get(model_id, {"id": model_id, "displayName": model_id}))
+        _add_reasoning_profile(item)
         source_entry = found.get(model_id)
         if source_entry:
             view = _legacy_view(source_entry[1], source_entry[0])
             item["displayName"] = view.get("model_display_name") or model_id
             if view.get("max_tokens"):
                 item["maxOutputTokens"] = view["max_tokens"]
+            effort = _entry_reasoning_effort(source_entry[1], source_entry[0])
+            if effort:
+                item["reasoningEffort"] = effort
         item.update({"selected": True, "isNew": False, "unavailable": True})
         output.append(item)
 
@@ -595,6 +707,9 @@ def _sync(
             model = dict(old_known_by_id.get(model_id, {"id": model_id, "displayName": model_id}))
             unavailable.append(model_id)
         entry = _make_entry(provider, model, api_key.strip(), source, previous)
+        profile = _reasoning_profile(model_id)
+        if source == "settings" and profile and profile.get("baseModelId"):
+            entry["baseModelId"] = profile["baseModelId"]
         if source == "legacy":
             legacy_rows.append(entry)
         else:
