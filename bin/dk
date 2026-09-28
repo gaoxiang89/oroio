@@ -84,7 +84,7 @@ Commands:
   current                show current key + export + clipboard
   use [index]            switch key (interactive if no index)
   run <cmd...>           run with key (auto-rotate on zero balance)
-  serve [start|stop|status]  web dashboard (default: start, port 7758)
+  serve [start|stop|status]  web dashboard (automatic port; DKM_SERVE_PORT to override)
   byok setup [glm|deepseek|kimi]  configure an official BYOK provider
   byok list|refresh [provider]|remove <provider>
   config                 interactive configuration menu
@@ -1661,13 +1661,32 @@ cmd_uninstall() {
   fi
 }
 
+read_serve_port() {
+  local port
+  port=$(cat "$1" 2>/dev/null) || return 1
+  [[ "$port" =~ ^[0-9]{1,5}$ ]] || return 1
+  port=$((10#$port))
+  ((port > 0 && port <= 65535)) || return 1
+  printf '%s' "$port"
+}
+
+show_serve_address() {
+  local port
+  if port=$(read_serve_port "$1"); then
+    printf '访问: \033[36mhttp://localhost:%s\033[0m\n' "$port"
+  else
+    echo "端口信息不可用，请重启服务以获取访问地址。"
+  fi
+}
+
 cmd_serve() {
   local subcmd="${1:-start}"
   shift 2>/dev/null || true
 
-  local port="${DKM_SERVE_PORT:-7758}"
+  local port="${DKM_SERVE_PORT:-0}"
   local web_dir="$DKM_HOME/web"
   local pid_file="$DKM_HOME/serve.pid"
+  local port_file="$DKM_HOME/serve.port"
   local log_file="$DKM_HOME/serve.log"
 
   case "$subcmd" in
@@ -1682,7 +1701,7 @@ cmd_serve() {
         old_pid=$(cat "$pid_file")
         if kill -0 "$old_pid" 2>/dev/null; then
           echo "服务已在运行 (PID: $old_pid)"
-          printf '访问: \033[36mhttp://localhost:%s\033[0m\n' "$port"
+          show_serve_address "$port_file"
           return 0
         fi
         rm -f "$pid_file"
@@ -1690,11 +1709,15 @@ cmd_serve() {
 
       command -v python3 >/dev/null 2>&1 || die "缺少 python3"
 
+      [[ "$port" =~ ^[0-9]{1,5}$ ]] || die "DKM_SERVE_PORT 必须是 0 到 65535 的整数（0 表示自动分配）"
+      port=$((10#$port))
+      ((port <= 65535)) || die "DKM_SERVE_PORT 必须是 0 到 65535 的整数（0 表示自动分配）"
+
       # Check if port is already in use
-      if command -v lsof >/dev/null 2>&1; then
+      if ((port > 0)) && command -v lsof >/dev/null 2>&1; then
         local port_proc
         # lsof 空闲时返回码为 1，避免 set -e 提前退出
-        port_proc=$(lsof -i :"$port" -t 2>/dev/null | head -1 || true)
+        port_proc=$(lsof -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | head -1 || true)
         if [ -n "$port_proc" ]; then
           local proc_name
           proc_name=$(ps -p "$port_proc" -o comm= 2>/dev/null || echo "unknown")
@@ -1730,6 +1753,7 @@ cmd_serve() {
       local dk_script="$script_dir/dk"
       [ -f "$serve_script" ] || die "未找到 serve.py"
 
+      rm -f "$port_file"
       if [ -n "$pin_hash" ]; then
         nohup python3 "$serve_script" "$port" "$web_dir" "$DKM_HOME" "$dk_script" "$pin_hash" >"$log_file" 2>&1 &
       else
@@ -1737,19 +1761,25 @@ cmd_serve() {
       fi
       local pid=$!
       echo "$pid" >"$pid_file"
-      sleep 0.3
-
-      if kill -0 "$pid" 2>/dev/null; then
-        echo "Web服务已启动 (PID: $pid)"
-        printf '访问: \033[36mhttp://localhost:%s\033[0m\n' "$port"
-      else
-        rm -f "$pid_file"
-        die "启动失败，请检查日志: $log_file"
-      fi
+      local attempt actual_port
+      for ((attempt = 0; attempt < 50; attempt++)); do
+        kill -0 "$pid" 2>/dev/null || break
+        if actual_port=$(read_serve_port "$port_file"); then
+          echo "Web服务已启动 (PID: $pid)"
+          show_serve_address "$port_file"
+          return 0
+        fi
+        sleep 0.1
+      done
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      rm -f "$pid_file" "$port_file"
+      die "启动失败，请检查日志: $log_file"
       ;;
 
     stop)
       if [ ! -f "$pid_file" ]; then
+        rm -f "$port_file"
         echo "服务未运行"
         return 0
       fi
@@ -1757,10 +1787,10 @@ cmd_serve() {
       pid=$(cat "$pid_file")
       if kill -0 "$pid" 2>/dev/null; then
         kill "$pid" 2>/dev/null
-        rm -f "$pid_file"
+        rm -f "$pid_file" "$port_file"
         echo "服务已停止 (PID: $pid)"
       else
-        rm -f "$pid_file"
+        rm -f "$pid_file" "$port_file"
         echo "服务未运行（已清理旧PID文件）"
       fi
       ;;
@@ -1771,7 +1801,7 @@ cmd_serve() {
         pid=$(cat "$pid_file")
         if kill -0 "$pid" 2>/dev/null; then
           echo "服务运行中 (PID: $pid)"
-          printf '访问: \033[36mhttp://localhost:%s\033[0m\n' "$port"
+          show_serve_address "$port_file"
           return 0
         fi
       fi

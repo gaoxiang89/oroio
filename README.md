@@ -69,7 +69,7 @@ Here's what `dk list` looks like:
 | `dk use <n>`           | Switch to key by index                      |
 | `dk rm <n...>`         | Remove keys by index                        |
 | `dk run <cmd>`         | Run command with current key (auto-rotates) |
-| `dk serve`             | Start web dashboard on port 7758            |
+| `dk serve`             | Start web dashboard on an available port    |
 | `dk byok setup [provider]` | Configure GLM, DeepSeek, or Kimi interactively |
 | `dk byok list`         | List official BYOK provider configurations  |
 | `dk byok refresh [provider]` | Refresh models using the saved key      |
@@ -117,7 +117,24 @@ dk serve stop   # Stop dashboard
 dk serve status # Check if running
 ```
 
-Access at `http://localhost:7758` to view and manage keys visually.
+Open the address printed by `dk serve` to view and manage keys visually. By default,
+the system allocates an available port; it may change after a restart. Use
+`dk serve status` to retrieve the running service's address, even from a new terminal.
+
+To use a fixed port, set `DKM_SERVE_PORT` before starting the service:
+
+```bash
+DKM_SERVE_PORT=7758 dk serve  # Linux / macOS / WSL
+```
+
+```powershell
+$env:DKM_SERVE_PORT = '7758'  # Windows PowerShell
+dk serve
+```
+
+Set it to `0` (or unset it) to restore automatic allocation. An occupied fixed port
+causes startup to fail; it does not silently switch ports. Restart a running service
+with `dk serve stop` followed by `dk serve` to apply a changed setting.
 
 ![Web Dashboard](assets/imgs/web-dashboard.png)
 

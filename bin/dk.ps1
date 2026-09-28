@@ -41,7 +41,7 @@ Commands:
   list                   list keys with balance/expiry
   current                show current key + export + clipboard
   use [index]            switch key (interactive if no index)
-  serve [start|stop|status]  web dashboard (default: start, port 7758)
+  serve [start|stop|status]  web dashboard (automatic port; DKM_SERVE_PORT to override)
   byok setup [glm|deepseek|kimi]  configure an official BYOK provider
   byok list|refresh [provider]|remove <provider>
   run <cmd...>           run with key (auto-rotate on zero balance)
@@ -292,17 +292,31 @@ function Save-Keys {
 }
 
 function Get-Python {
-    foreach ($name in @("python3", "python")) {
-        $cmd = Get-Command $name -ErrorAction SilentlyContinue
-        if ($cmd) { return $cmd.Path }
+    # Windows may resolve python/python3 to a Microsoft Store alias that cannot run
+    # scripts. Probe each candidate and use the actual interpreter (also for py -3).
+    foreach ($name in @("python", "python3", "py")) {
+        $commands = Get-Command $name -CommandType Application -All -ErrorAction SilentlyContinue
+        foreach ($cmd in $commands) {
+            $probeArgs = @("-c", "import sys; print(sys.executable) if sys.version_info[0] == 3 else sys.exit(1)")
+            if ($name -eq "py") { $probeArgs = @("-3") + $probeArgs }
+            try {
+                $output = @(& $cmd.Path @probeArgs 2>$null)
+                if ($LASTEXITCODE -eq 0 -and $output.Count -eq 1) {
+                    $pythonPath = ([string]$output[0]).Trim()
+                    if (Test-Path -LiteralPath $pythonPath -PathType Leaf) {
+                        return $pythonPath
+                    }
+                }
+            } catch { }
+        }
     }
-    Write-ErrorExit "未找到 python3，请先安装 https://www.python.org/downloads/"
+    Write-ErrorExit "未找到可运行的 Python 3，请先安装 https://www.python.org/downloads/ 并添加到 PATH"
 }
 
 function Get-PortProcess {
     param([int]$Port)
     try {
-        $conn = Get-NetTCPConnection -LocalPort $Port -ErrorAction Stop | Select-Object -First 1
+        $conn = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction Stop | Select-Object -First 1
         if ($conn) { return $conn.OwningProcess }
     } catch { }
     try {
@@ -1106,13 +1120,30 @@ function Cmd-Remove {
     Write-Host "已删除，剩余 $($newKeys.Length) 个key。"
 }
 
+function Get-ServePort {
+    param([string]$PortFile)
+    $value = Get-Content -LiteralPath $PortFile -Raw -ErrorAction SilentlyContinue
+    if ($null -ne $value -and $value.Trim() -match '^[0-9]{1,5}$') {
+        $port = [int]$value.Trim()
+        if ($port -gt 0 -and $port -le 65535) { return $port }
+    }
+    return $null
+}
+
+function Show-ServeAddress {
+    param([string]$PortFile)
+    $port = Get-ServePort -PortFile $PortFile
+    if ($port) { Write-Host ("访问: http://localhost:{0}" -f $port) }
+    else { Write-Host "端口信息不可用，请重启服务以获取访问地址。" }
+}
+
 function Cmd-Serve {
     param([string[]]$ServeArgs)
     
     $subcmd = if ($ServeArgs.Length -gt 0) { $ServeArgs[0] } else { "start" }
-    $port = if ($env:DKM_SERVE_PORT) { [int]$env:DKM_SERVE_PORT } else { 7758 }
     $webDir = $script:WEB_DIR
     $pidFile = Join-Path $script:OROIO_DIR "serve.pid"
+    $portFile = Join-Path $script:OROIO_DIR "serve.port"
     $logFile = Join-Path $script:OROIO_DIR "serve.log"
     $errFile = Join-Path $script:OROIO_DIR "serve-error.log"
     
@@ -1133,17 +1164,25 @@ function Cmd-Serve {
                 $oldPid = Get-Content $pidFile -ErrorAction SilentlyContinue
                 if ($oldPid -and (Get-Process -Id $oldPid -ErrorAction SilentlyContinue)) {
                     Write-Host "服务已在运行 (PID: $oldPid)"
-                    Write-Host ("访问: http://localhost:{0}" -f $port)
+                    Show-ServeAddress -PortFile $portFile
                     return
                 }
                 Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
             }
             
-            $portProc = Get-PortProcess -Port $port
+            $port = 0
+            if ($env:DKM_SERVE_PORT) {
+                if ($env:DKM_SERVE_PORT -notmatch '^[0-9]{1,5}$' -or [int]$env:DKM_SERVE_PORT -gt 65535) {
+                    Write-ErrorExit "DKM_SERVE_PORT 必须是 0 到 65535 的整数（0 表示自动分配）"
+                }
+                $port = [int]$env:DKM_SERVE_PORT
+            }
+            $portProc = if ($port -gt 0) { Get-PortProcess -Port $port } else { $null }
             if ($portProc) {
                 $killHint = "Stop-Process -Id $portProc -Force"
                 Write-ErrorExit "端口 $port 已被占用 (PID: $portProc)，可执行 [$killHint] 释放后重试，或设置 DKM_SERVE_PORT 更换端口"
             }
+            $python = Get-Python
             
             # Prompt for 4-digit PIN
             $pinHash = ""
@@ -1173,24 +1212,34 @@ function Cmd-Serve {
                 }
             }
             
-            $python = Get-Python
-            $args = @($serveScript, "$port", $webDir, $script:OROIO_DIR, $dkPath)
+            Remove-Item -LiteralPath $portFile -Force -ErrorAction SilentlyContinue
+            $serverArgs = @($serveScript, "$port", $webDir, $script:OROIO_DIR, $dkPath)
             if ($pinHash) {
-                $args += $pinHash
+                $serverArgs += $pinHash
             }
-            $p = Start-Process -FilePath $python -ArgumentList $args -PassThru -WindowStyle Hidden -RedirectStandardOutput $logFile -RedirectStandardError $errFile
-            Start-Sleep -Milliseconds 300
-            if (Get-Process -Id $p.Id -ErrorAction SilentlyContinue) {
-                Set-Content -Path $pidFile -Value $p.Id -NoNewline
-                Write-Host "Web服务已启动 (PID: $($p.Id))"
-                Write-Host ("访问: http://localhost:{0}" -f $port)
+            $argumentLine = ($serverArgs | ForEach-Object { '"' + $_ + '"' }) -join ' '
+            $p = Start-Process -FilePath $python -ArgumentList $argumentLine -PassThru -WindowStyle Hidden -RedirectStandardOutput $logFile -RedirectStandardError $errFile
+            for ($attempt = 0; $attempt -lt 50; $attempt++) {
+                if ($p.HasExited) { break }
+                $actualPort = Get-ServePort -PortFile $portFile
+                if ($actualPort) {
+                    Set-Content -Path $pidFile -Value $p.Id -NoNewline
+                    Write-Host "Web服务已启动 (PID: $($p.Id))"
+                    Show-ServeAddress -PortFile $portFile
+                    return
+                }
+                Start-Sleep -Milliseconds 100
             }
-            else {
-                Write-ErrorExit "启动失败，请检查日志: $logFile / $errFile"
-            }
+            if (-not $p.HasExited) { $p.Kill(); $p.WaitForExit() }
+            Remove-Item -LiteralPath $pidFile, $portFile -Force -ErrorAction SilentlyContinue
+            Write-ErrorExit "启动失败，请检查日志: $logFile / $errFile"
         }
         "stop" {
-            if (-not (Test-Path $pidFile)) { Write-Host "服务未运行"; return }
+            if (-not (Test-Path $pidFile)) {
+                Remove-Item -LiteralPath $portFile -Force -ErrorAction SilentlyContinue
+                Write-Host "服务未运行"
+                return
+            }
             $servePid = Get-Content $pidFile -ErrorAction SilentlyContinue
             if ($servePid -and (Get-Process -Id $servePid -ErrorAction SilentlyContinue)) {
                 Stop-Process -Id $servePid -Force -ErrorAction SilentlyContinue
@@ -1199,14 +1248,14 @@ function Cmd-Serve {
             else {
                 Write-Host "服务未运行（已清理旧PID文件）"
             }
-            Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $pidFile, $portFile -Force -ErrorAction SilentlyContinue
         }
         "status" {
             if (Test-Path $pidFile) {
                 $servePid = Get-Content $pidFile -ErrorAction SilentlyContinue
                 if ($servePid -and (Get-Process -Id $servePid -ErrorAction SilentlyContinue)) {
                     Write-Host "服务运行中 (PID: $servePid)"
-                    Write-Host ("访问: http://localhost:{0}" -f $port)
+                    Show-ServeAddress -PortFile $portFile
                     return
                 }
             }

@@ -9,6 +9,7 @@ import platform
 import secrets
 import subprocess
 import sys
+import tempfile
 import threading
 import urllib.request
 import urllib.error
@@ -1150,6 +1151,17 @@ def run(port, web_dir, oroio_dir, dk_path, pin_hash=None):
     )
     
     with http.server.ThreadingHTTPServer(('0.0.0.0', port), handler) as httpd:
+        # Publish only after bind/listen succeeds. Port 0 is allocated by the OS.
+        port_file = os.path.join(oroio_dir, 'serve.port')
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=oroio_dir,
+                                         prefix='.serve-port-', delete=False) as state:
+            state.write(str(httpd.server_port))
+        try:
+            os.replace(state.name, port_file)
+        finally:
+            if os.path.exists(state.name):
+                os.remove(state.name)
+        print(f'Listening on http://localhost:{httpd.server_port}', flush=True)
         httpd.serve_forever()
 
 if __name__ == '__main__':

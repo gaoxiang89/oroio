@@ -69,7 +69,7 @@ droid
 | `dk use <序号>`        | 按序号切换密钥                   |
 | `dk rm <序号...>`      | 按序号删除密钥                   |
 | `dk run <命令>`        | 使用当前密钥运行命令（自动轮换） |
-| `dk serve`             | 启动 Web 控制台（端口 7758）     |
+| `dk serve`             | 启动 Web 控制台（自动分配空闲端口） |
 | `dk byok setup [平台]` | 交互配置 GLM、DeepSeek 或 Kimi   |
 | `dk byok list`         | 查看官方 BYOK 平台配置           |
 | `dk byok refresh [平台]` | 使用已保存 Key 刷新模型        |
@@ -117,7 +117,22 @@ dk serve stop   # 停止控制台
 dk serve status # 检查运行状态
 ```
 
-访问 `http://localhost:7758` 可视化查看和管理密钥。
+访问 `dk serve` 输出的地址，可视化查看和管理密钥。默认由系统分配空闲端口，
+重启后端口可能变化。运行 `dk serve status` 可查看当前服务的实际地址，换一个终端也能查询。
+
+需要固定端口时，在启动前设置 `DKM_SERVE_PORT`：
+
+```bash
+DKM_SERVE_PORT=7758 dk serve  # Linux / macOS / WSL
+```
+
+```powershell
+$env:DKM_SERVE_PORT = '7758'  # Windows PowerShell
+dk serve
+```
+
+设为 `0` 或取消该环境变量即可恢复自动分配。指定的固定端口被占用时会启动失败，
+不会自动换端口。修改设置后，先执行 `dk serve stop`，再执行 `dk serve` 使其生效。
 
 ![Web Dashboard](assets/imgs/web-dashboard.png)
 
