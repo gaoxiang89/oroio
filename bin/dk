@@ -8,6 +8,7 @@ KEYS_ENC_FILE="$DKM_HOME/keys.enc"   # 加密存储的 keys
 CURRENT_FILE="$DKM_HOME/current"     # 保存当前key的行号（从1开始）
 DKM_CACHE_FILE="$DKM_HOME/list_cache.b64"
 DKM_CONFIG_FILE="$DKM_HOME/config"   # 用户配置文件
+DKM_IDENTITY_FILE="$DKM_HOME/identity_cache.json"  # sha256(key) -> 邮箱
 DKM_SALT="oroio"
 
 config_get() {
@@ -68,10 +69,12 @@ if use_ascii_borders; then
   B_TL='+'; B_TR='+'; B_BL='+'; B_BR='+'
   B_H='-'; B_V='|'
   B_TT='+'; B_TB='+'; B_TL_MID='+'; B_TR_MID='+'; B_X='+'
+  B_FULL='#'; B_EMPTY='-'
 else
   B_TL='┌'; B_TR='┐'; B_BL='└'; B_BR='┘'
   B_H='─'; B_V='│'
   B_TT='┬'; B_TB='┴'; B_TL_MID='├'; B_TR_MID='┤'; B_X='┼'
+  B_FULL='█'; B_EMPTY='░'
 fi
 
 usage() {
@@ -198,6 +201,10 @@ fetch_all_infos() {
     FETCH_INFOS[$idx]=$(cat "$tmpdir/$idx")
   done
   rm -rf "$tmpdir"
+  for idx in "${!KEYS[@]}"; do
+    IFS=$'\t' read -r key _ <<<"${KEYS[$idx]}"
+    printf '%s\t%s\n' "$key" "$(printf '%s\n' "${FETCH_INFOS[$idx]}" | sed -n 's/^EMAIL=//p' | head -n 1)"
+  done | identity_cache_update || true
 }
 
 cache_load_infos() {
@@ -326,9 +333,64 @@ except Exception:
 '
 }
 
+# 邮箱与 key 一一对应且不会变化，缓存到本地以免 auth/me 偶发超时导致显示为空。
+# 与 dk.ps1 共用文件格式：{ sha256(key): email }
+identity_cache_get() {
+  [ -f "$DKM_IDENTITY_FILE" ] || return 0
+  DKM_ID_KEY="$1" DKM_ID_FILE="$DKM_IDENTITY_FILE" python3 -c '
+import hashlib, json, os
+try:
+    with open(os.environ["DKM_ID_FILE"], encoding="utf-8-sig") as f:
+        data = json.load(f)
+    h = hashlib.sha256(os.environ["DKM_ID_KEY"].encode()).hexdigest()
+    v = data.get(h) if isinstance(data, dict) else None
+    if isinstance(v, str):
+        print(" ".join(v.splitlines()).strip())
+except Exception:
+    pass
+' 2>/dev/null || true
+}
+
+# stdin: 每行 "key<TAB>email"
+identity_cache_update() {
+  DKM_ID_FILE="$DKM_IDENTITY_FILE" python3 -c '
+import hashlib, json, os, sys
+path = os.environ["DKM_ID_FILE"]
+try:
+    with open(path, encoding="utf-8-sig") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        data = {}
+except Exception:
+    data = {}
+changed = False
+for line in sys.stdin:
+    key, _, email = line.rstrip("\r\n").partition("\t")
+    if not key or not email:
+        continue
+    h = hashlib.sha256(key.encode()).hexdigest()
+    if data.get(h) != email:
+        data[h] = email
+        changed = True
+if changed:
+    old = os.umask(0o077)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, separators=(",", ":"))
+    finally:
+        os.umask(old)
+' 2>/dev/null || true
+}
+
 fetch_identity() {
-  local key="$1" parsed
+  local key="$1" parsed cached
   # 身份信息用于区分 key，不应拖慢主要用量请求或影响其成功状态。
+  # 邮箱已缓存时跳过 auth/me；该接口常需 1-2s，不能用过短超时。
+  cached=$(identity_cache_get "$key")
+  if [ -n "$cached" ]; then
+    printf "ORG_ID=\nEMAIL=%s\n" "$cached"
+    return
+  fi
   dkm_http_get "$DKM_PROFILE_URL" "$key" 6 2
   if [ "$DKM_HTTP_STATUS" = "200" ]; then
     parsed=$(printf "%s" "$DKM_HTTP_BODY" | parse_factory_identity_json) || parsed=""
@@ -452,6 +514,9 @@ def emit_rate(data):
     core_used = int(round(bottleneck(core)["pct"])) if core else 0
     pref = data.get("overagePreference") or ""
     print("MODE=rate")
+    print("FIVE=%d" % round(std[0]["pct"]))
+    print("WEEK=%d" % round(std[1]["pct"]))
+    print("MONTH=%d" % round(std[2]["pct"]))
     print(f"DISPLAY={display}")
     print(f"BALANCE={remain}")
     print(f"BALANCE_NUM={remain}")
@@ -605,7 +670,7 @@ compact_num() {
     else if (abs >= 1e6) printf "%.1fM", n/1e6;
     else if (abs >= 1e3) printf "%.1fk", n/1e3;
     else printf "%.0f", n;
-  }' | sed -E 's/\\.0([kMB])$/\\1/'
+  }' | sed -E 's/\.0([kMB])$/\1/'
 }
 
 is_num() {
@@ -697,6 +762,78 @@ render_usage_text() {
     fi
   fi
   printf "%s/%s" "$(compact_num "$used")" "$(compact_num "$total")"
+}
+
+color_code() {
+  local code="$1" text="$2"
+  if color_mode_enabled; then printf "\033[%sm%s\033[0m" "$code" "$text"; else printf "%s" "$text"; fi
+}
+
+repeat_str() {
+  local s="$1" n="$2" out="" i
+  for (( i=0; i<n; i++ )); do out+="$s"; done
+  printf "%s" "$out"
+}
+
+# 按已用百分比取色：<50 绿，<80 黄，否则红
+usage_color() {
+  local pct="$1"
+  if (( pct >= 80 )); then echo 31; elif (( pct >= 50 )); then echo 33; else echo 32; fi
+}
+
+# 彩色进度条: ████░░░░░░  23%；无 label 时可见宽度固定为 len+5
+render_pct_bar() {
+  local pct="$1" len="$2" label="${3:-}"
+  if ! [[ "$pct" =~ ^[0-9]+$ ]]; then
+    color_code 90 "$(repeat_str "$B_EMPTY" "$len")$(printf '%5s' '-')"
+    return
+  fi
+  (( pct > 100 )) && pct=100
+  local fill=$(( (pct * len + 50) / 100 ))
+  if (( pct > 0 && fill == 0 )); then fill=1; fi
+  local color text
+  color=$(usage_color "$pct")
+  if (( fill > 0 )); then color_code "$color" "$(repeat_str "$B_FULL" "$fill")"; fi
+  if (( fill < len )); then color_code 90 "$(repeat_str "$B_EMPTY" $((len - fill)))"; fi
+  if [ -n "$label" ]; then text=" $label"; else text=$(printf '%4d%%' "$pct"); fi
+  color_code "$color" "$text"
+}
+
+# 在固定可见宽度内输出纯文本（超出截断，不足补空格），可选颜色
+fixed_text() {
+  local text="$1" width="$2" code="${3:-}"
+  if (( ${#text} > width )); then text="${text:0:width}"; fi
+  if [ -n "$code" ]; then color_code "$code" "$text"; else printf "%s" "$text"; fi
+  printf '%*s' $(( width - ${#text} )) ""
+}
+
+# 用量单元格：rate 模式显示 5h/7d/30d 三段进度条，token 模式显示一条总额度进度条
+# 可见宽度固定为 (bar_len+5)*3 + gap*2
+render_usage_cells() {
+  local mode="$1" raw="$2" five="$3" week="$4" month="$5" used="$6" total="$7" bar_len="$8" gap="$9"
+  local width=$(( (bar_len + 5) * 3 + gap * 2 ))
+  local sp; sp=$(printf '%*s' "$gap" "")
+  if [[ "$raw" == http_* ]]; then
+    fixed_text "Invalid key" "$width" 31; return
+  elif [ -n "$raw" ]; then
+    fixed_text "Request failed" "$width" 31; return
+  fi
+  if [ "$mode" = "rate" ]; then
+    render_pct_bar "$five" "$bar_len"; printf "%s" "$sp"
+    render_pct_bar "$week" "$bar_len"; printf "%s" "$sp"
+    render_pct_bar "$month" "$bar_len"
+    return
+  fi
+  if is_num "$total" && is_num "$used" && awk -v t="$total" 'BEGIN{exit !(t>0)}'; then
+    local pct label long_len=$(( bar_len * 2 ))
+    pct=$(awk -v u="$used" -v t="$total" 'BEGIN{p=u/t*100; if(p<0)p=0; printf "%d", p+0.5}')
+    label="$(compact_num "$used")/$(compact_num "$total")"
+    render_pct_bar "$pct" "$long_len" "$label"
+    local pad=$(( width - long_len - 1 - ${#label} ))
+    if (( pad > 0 )); then printf '%*s' "$pad" ""; fi
+    return
+  fi
+  fixed_text "-" "$width" 90
 }
 
 calc_remain() {
@@ -1057,93 +1194,33 @@ cmd_list() {
   cur=$(current_index)
   cols=${COLUMNS:-$(tput cols 2>/dev/null || echo 120)}
 
-  local expw=12
-  local keyw=16 emailw=24 orgw=20 progw=30
-  local min_key=14 min_email=16 min_org=12 min_prog=22
-
-  # 行总宽度估算 = 各列宽 + 分隔符/空格(约23)
-  local total_needed=$(( keyw + emailw + orgw + progw + expw + 23 ))
-  if (( total_needed > cols )); then
-    local over=$(( total_needed - cols ))
-    local cut=$(( keyw - min_key ))
-    if (( cut > 0 )); then
-      local delta=$(( over < cut ? over : cut ))
-      keyw=$(( keyw - delta ))
-      over=$(( over - delta ))
-    fi
-    if (( over > 0 )); then
-      cut=$(( emailw - min_email ))
-      if (( cut > 0 )); then
-        local delta=$(( over < cut ? over : cut ))
-        emailw=$(( emailw - delta ))
-        over=$(( over - delta ))
-      fi
-    fi
-    if (( over > 0 )); then
-      cut=$(( orgw - min_org ))
-      if (( cut > 0 )); then
-        local delta=$(( over < cut ? over : cut ))
-        orgw=$(( orgw - delta ))
-        over=$(( over - delta ))
-      fi
-    fi
-    if (( over > 0 )); then
-      cut=$(( progw - min_prog ))
-      if (( cut > 0 )); then
-        local delta=$(( over < cut ? over : cut ))
-        progw=$(( progw - delta ))
-        over=$(( over - delta ))
-      fi
-    fi
-  fi
-
-  # 预渲染数据（避免重复请求）；使用全局统一的进度条长度保证用量对齐
-  local -a ROW_NO ROW_KEY ROW_EMAIL ROW_ORG ROW_EXP USAGE_TXT BALNUM_ARR TOTAL_ARR REMAIN_ARR RAW_ARR
-  local i=0 max_usage_len=0
+  # 预解析每个 key 的数据（避免重复请求）
+  local -a ROW_NO ROW_KEY ROW_EMAIL ROW_EXP ROW_MODE ROW_RAW ROW_FIVE ROW_WEEK ROW_MONTH ROW_USED ROW_TOTAL
+  local i=0 emailw=5
   for line in "${KEYS[@]}"; do
     ((++i))
-    IFS=$'\t' read -r key label <<<"$line"
-    label=${label:-}
-    if (( use_cache )); then
-      info="${FETCH_INFOS[$((i-1))]}"
-    else
-      info="${FETCH_INFOS[$((i-1))]}"
-    fi
-    local bal="" balnum="" total="" used="" exp="" exp_full="" raw="" display="" mode="" email="" org_id=""
+    IFS=$'\t' read -r key _ <<<"$line"
+    info="${FETCH_INFOS[$((i-1))]}"
+    local balnum="" total="" used="" exp="" raw="" mode="" email="" five="" week="" month=""
     while IFS='=' read -r k v; do
       case "$k" in
-        BALANCE) bal="$v";;
         BALANCE_NUM) balnum="$v";;
         TOTAL) total="$v";;
         USED) used="$v";;
         EXPIRES) exp="$v";;
-        EXPIRES_FULL) exp_full="$v";;
         RAW) raw="$v";;
-        DISPLAY) display="$v";;
         MODE) mode="$v";;
         EMAIL) email="$v";;
-        ORG_ID) org_id="$v";;
+        FIVE) five="$v";;
+        WEEK) week="$v";;
+        MONTH) month="$v";;
       esac
     done <<<"$info"
 
+    local remain key_disp marker row_exp alert=0
     remain=$(calc_remain "$balnum" "$total" "$used")
-    local display_usage
-    if [[ -n "$display" ]]; then
-      display_usage="$display"
-    else
-      display_usage=$(render_usage_text "$used" "$total" "$balnum")
-    fi
-    if [[ "$raw" == http_* ]]; then
-      display_usage="0/0"
-    fi
-    (( ${#display_usage} > max_usage_len )) && max_usage_len=${#display_usage}
-
-    local key_disp marker row_key row_exp alert=0
-    key_disp=$(mask_key "$key")
-    marker=$([ "$i" -eq "$cur" ] && echo "$(color_cyan "▶") " || echo "  ")
-
-    # 余额<=0 或低于10% 或 HTTP 非200 均标红（仅 Key 列）
-    if [[ "$raw" == http_* ]]; then
+    # 请求失败、余额<=0 或低于10% 标红（Key 与 Expiry 列）
+    if [ -n "$raw" ]; then
       alert=1
     elif is_low_remain "$remain" "$total"; then
       alert=1
@@ -1151,144 +1228,84 @@ cmd_list() {
       alert=1
     fi
 
-    if (( alert )); then
-      row_key="${marker}$(color_red "$key_disp")"
-    else
-      row_key="${marker}${key_disp}"
-    fi
+    key_disp=$(mask_key "$key")
+    (( alert )) && key_disp=$(color_red "$key_disp")
+    marker=$([ "$i" -eq "$cur" ] && echo "$(color_cyan "▶") " || echo "  ")
+
+    email=$(mask_email "${email:--}")
+    (( ${#email} > emailw )) && emailw=${#email}
 
     row_exp="${exp:-?}"
     case "$row_exp" in
       [Nn][Uu][Ll][Ll]) row_exp="?" ;;
     esac
+    (( alert )) && row_exp=$(color_red "$row_exp")
 
     ROW_NO+=("$i")
-    ROW_KEY+=("$row_key")
-    ROW_EMAIL+=("$(mask_email "${email:--}")")
-    ROW_ORG+=("${org_id:--}")
+    ROW_KEY+=("${marker}${key_disp}")
+    ROW_EMAIL+=("$email")
     ROW_EXP+=("$row_exp")
-    USAGE_TXT+=("$display_usage")
-    BALNUM_ARR+=("$balnum")
-    TOTAL_ARR+=("$total")
-    REMAIN_ARR+=("$remain")
-    RAW_ARR+=("$raw")
+    ROW_MODE+=("$mode")
+    ROW_RAW+=("$raw")
+    ROW_FIVE+=("$five")
+    ROW_WEEK+=("$week")
+    ROW_MONTH+=("$month")
+    ROW_USED+=("$used")
+    ROW_TOTAL+=("$total")
   done
+  (( emailw > 32 )) && emailw=32
 
-  # 全局统一的进度条长度，确保用量数字纵向对齐
-  local bar_len_global=$(( progw - max_usage_len - 3 ))  # [] + 空格
-  (( bar_len_global < 1 )) && bar_len_global=1
+  # 列宽：进度条长度随终端宽度在 4~10 之间伸缩；边框与内边距共 列数*3+1
+  local now=4 keyw=16 expw=11 gap=2 bar_len=10
+  local avail=$(( cols - (now + keyw + emailw + expw + 5 * 3 + 1) ))
+  bar_len=$(( (avail - gap * 2) / 3 - 5 ))
+  (( bar_len > 10 )) && bar_len=10
+  (( bar_len < 4 )) && bar_len=4
+  local cellw=$(( bar_len + 5 ))
+  local usagew=$(( cellw * 3 + gap * 2 ))
 
-  # 生成最终行的用量文本
-  local -a ROW_USAGE
-  for ((i=0; i<${#KEYS[@]}; i++)); do
-    local bar usage_txt remain total balnum raw
-    usage_txt="${USAGE_TXT[$i]}"
-    balnum="${BALNUM_ARR[$i]}"
-    total="${TOTAL_ARR[$i]}"
-    remain="${REMAIN_ARR[$i]}"
-    raw="${RAW_ARR[$i]}"
+  local usage_head
+  usage_head=$(printf "%-*s%*s%-*s%*s%-*s" "$cellw" "5h" "$gap" "" "$cellw" "7d" "$gap" "" "$cellw" "30d")
 
-    bar=$(render_bar "$balnum" "$total" "$bar_len_global")
-    if [[ "$raw" == http_* ]]; then
-      usage_txt="0/0"
-    fi
+  table_rule "$B_TL" "$B_TT" "$B_TR" "$now" "$keyw" "$emailw" "$usagew" "$expw"
+  table_row \
+    "$(pad_cell "$(color_black_bold "No")" "$now")" \
+    "$(pad_cell "$(color_black_bold "Key")" "$keyw")" \
+    "$(pad_cell "$(color_black_bold "Email")" "$emailw")" \
+    "$(color_black_bold "$usage_head")" \
+    "$(pad_cell "$(color_black_bold "Expiry")" "$expw")"
+  table_rule "$B_TL_MID" "$B_X" "$B_TR_MID" "$now" "$keyw" "$emailw" "$usagew" "$expw"
 
-    ROW_USAGE+=( "${bar} ${usage_txt}" )
+  local idx
+  for ((idx=0; idx<${#KEYS[@]}; idx++)); do
+    table_row \
+      "$(pad_cell "${ROW_NO[$idx]}" "$now")" \
+      "$(clip_pad "${ROW_KEY[$idx]}" "$keyw")" \
+      "$(clip_pad "${ROW_EMAIL[$idx]}" "$emailw")" \
+      "$(render_usage_cells "${ROW_MODE[$idx]}" "${ROW_RAW[$idx]}" "${ROW_FIVE[$idx]}" "${ROW_WEEK[$idx]}" "${ROW_MONTH[$idx]}" "${ROW_USED[$idx]}" "${ROW_TOTAL[$idx]}" "$bar_len" "$gap")" \
+      "$(pad_cell "${ROW_EXP[$idx]}" "$expw")"
   done
+  table_rule "$B_BL" "$B_TB" "$B_BR" "$now" "$keyw" "$emailw" "$usagew" "$expw"
+}
 
-  local h1 h2 h3 h4 h5 h6
-  h1=$(color_black_bold "No")
-  h2=$(color_black_bold "Key")
-  h3=$(color_black_bold "Email")
-  h4=$(color_black_bold "Org ID")
-  h5=$(color_black_bold "Usage")
-  h6=$(color_black_bold "Expiry")
-  local top mid bot
-  top=$(printf "%s%s%s%s%s%s%s%s%s%s%s%s%s" \
-    "$B_TL" \
-    "$(printf '%*s' $((4+2)) '' | tr ' ' "$B_H")" \
-    "$B_TT" \
-    "$(printf '%*s' $((keyw+2)) '' | tr ' ' "$B_H")" \
-    "$B_TT" \
-    "$(printf '%*s' $((emailw+2)) '' | tr ' ' "$B_H")" \
-    "$B_TT" \
-    "$(printf '%*s' $((orgw+2)) '' | tr ' ' "$B_H")" \
-    "$B_TT" \
-    "$(printf '%*s' $((progw+2)) '' | tr ' ' "$B_H")" \
-    "$B_TT" \
-    "$(printf '%*s' $((expw+2)) '' | tr ' ' "$B_H")" \
-    "$B_TR")
-  mid=$(printf "%s%s%s%s%s%s%s%s%s%s%s%s%s" \
-    "$B_TL_MID" \
-    "$(printf '%*s' $((4+2)) '' | tr ' ' "$B_H")" \
-    "$B_X" \
-    "$(printf '%*s' $((keyw+2)) '' | tr ' ' "$B_H")" \
-    "$B_X" \
-    "$(printf '%*s' $((emailw+2)) '' | tr ' ' "$B_H")" \
-    "$B_X" \
-    "$(printf '%*s' $((orgw+2)) '' | tr ' ' "$B_H")" \
-    "$B_X" \
-    "$(printf '%*s' $((progw+2)) '' | tr ' ' "$B_H")" \
-    "$B_X" \
-    "$(printf '%*s' $((expw+2)) '' | tr ' ' "$B_H")" \
-    "$B_TR_MID")
-  bot=$(printf "%s%s%s%s%s%s%s%s%s%s%s%s%s" \
-    "$B_BL" \
-    "$(printf '%*s' $((4+2)) '' | tr ' ' "$B_H")" \
-    "$B_TB" \
-    "$(printf '%*s' $((keyw+2)) '' | tr ' ' "$B_H")" \
-    "$B_TB" \
-    "$(printf '%*s' $((emailw+2)) '' | tr ' ' "$B_H")" \
-    "$B_TB" \
-    "$(printf '%*s' $((orgw+2)) '' | tr ' ' "$B_H")" \
-    "$B_TB" \
-    "$(printf '%*s' $((progw+2)) '' | tr ' ' "$B_H")" \
-    "$B_TB" \
-    "$(printf '%*s' $((expw+2)) '' | tr ' ' "$B_H")" \
-    "$B_BR")
-
-  printf "%s\n" "$top"
-  printf "%s %s %s %s %s %s %s %s %s %s %s %s %s\n" \
-    "$B_V" \
-    "$(pad_cell "$h1" 4)" \
-    "$B_V" \
-    "$(pad_cell "$h2" $keyw)" \
-    "$B_V" \
-    "$(pad_cell "$h3" $emailw)" \
-    "$B_V" \
-    "$(pad_cell "$h4" $orgw)" \
-    "$B_V" \
-    "$(pad_cell "$h5" $progw)" \
-    "$B_V" \
-    "$(pad_cell "$h6" $expw)" \
-    "$B_V"
-  printf "%s\n" "$mid"
-
-  local idx=0
-  for _ in "${KEYS[@]}"; do
-    local key_cell email_cell org_cell usage_cell exp_cell
-    key_cell=$(clip_pad "${ROW_KEY[$idx]}" "$keyw")
-    email_cell=$(clip_pad "${ROW_EMAIL[$idx]}" "$emailw")
-    org_cell=$(clip_pad "${ROW_ORG[$idx]}" "$orgw")
-    usage_cell=$(clip_pad "${ROW_USAGE[$idx]}" "$progw")
-    exp_cell=$(clip_pad "${ROW_EXP[$idx]}" $expw)
-    printf "%s %s %s %s %s %s %s %s %s %s %s %s %s\n" \
-      "$B_V" \
-      "$(pad_cell "${ROW_NO[$idx]}" 4)" \
-      "$B_V" \
-      "$key_cell" \
-      "$B_V" \
-      "$email_cell" \
-      "$B_V" \
-      "$org_cell" \
-      "$B_V" \
-      "$usage_cell" \
-      "$B_V" \
-      "$exp_cell" \
-      "$B_V"
-    ((++idx))
+# 表格横线：table_rule 左 中 右 列宽...
+table_rule() {
+  local l="$1" m="$2" r="$3" out w first=1
+  shift 3
+  out="$l"
+  for w in "$@"; do
+    (( first )) || out+="$m"
+    first=0
+    out+="$(repeat_str "$B_H" $((w + 2)))"
   done
-  printf "%s\n" "$bot"
+  printf "%s%s\n" "$out" "$r"
+}
+
+# 表格行：table_row 单元格...（单元格需已按列宽填充）
+table_row() {
+  local out="$B_V" c
+  for c in "$@"; do out+=" $c $B_V"; done
+  printf "%s\n" "$out"
 }
 
 cmd_current() {
@@ -1300,70 +1317,33 @@ cmd_current() {
   if (( cur > ${#KEYS[@]} )); then cur=1; fi
   IFS=$'\t' read -r key label <<<"${KEYS[$((cur-1))]}"
   info=$(fetch_usage "$key")
-  local bal="" exp="" exp_full="" balnum="" total="" used="" raw="" display="" email="" org_id="" alert=0
+  local exp="" exp_full="" balnum="" total="" used="" raw="" mode="" email="" five="" week="" month="" alert=0
   while IFS='=' read -r k v; do
     case "$k" in
-      BALANCE) bal="$v";;
       BALANCE_NUM) balnum="$v";;
       TOTAL) total="$v";;
       USED) used="$v";;
       EXPIRES) exp="$v";;
       EXPIRES_FULL) exp_full="$v";;
       RAW) raw="$v";;
-      DISPLAY) display="$v";;
+      MODE) mode="$v";;
       EMAIL) email="$v";;
-      ORG_ID) org_id="$v";;
+      FIVE) five="$v";;
+      WEEK) week="$v";;
+      MONTH) month="$v";;
     esac
   done <<<"$info"
-  local label_w=8
-  local value_w=60
-  # widen value column to fit longest content (no truncation)
-  local key_len=${#key}
-  local exp_str="${exp:-?}"
-  local exp_len=${#exp_str}
-  if (( key_len > value_w )); then value_w=$key_len; fi
-  if (( exp_len > value_w )); then value_w=$exp_len; fi
-  if (( ${#email} > value_w )); then value_w=${#email}; fi
-  if (( ${#org_id} > value_w )); then value_w=${#org_id}; fi
-
-  local usage_text
-  if [[ -n "$display" ]]; then
-    usage_text="$display"
-  else
-    usage_text=$(render_usage_text "$used" "$total" "$balnum")
-  fi
-  if [[ "$raw" == http_* ]]; then
-    usage_text="0/0"
-  fi
+  if [ -n "$email" ]; then printf '%s\t%s\n' "$key" "$email" | identity_cache_update || true; fi
 
   local remain
   remain=$(calc_remain "$balnum" "$total" "$used")
-  # compute bar length based on available value width and usage text length
-  local usage_text_len=$((1 + ${#usage_text})) # space + text
-  # bar includes [] (2 chars), make string fit value_w
-  local bar_len=$((value_w - usage_text_len - 2))
-  if (( bar_len < 3 )); then bar_len=3; fi
-  local bar
-  bar=$(render_bar "$balnum" "$total" "$bar_len")
 
-  local exp_display
-  if [ -n "${exp_ts:-}" ] && [[ "$exp_ts" =~ ^-?[0-9]+([.][0-9]+)?$ ]]; then
-    local exp_seconds
-    exp_seconds=$(printf "%.0f" "$exp_ts")
-    if exp_display=$(TZ=UTC date -u -r "$((exp_seconds + 28800))" "+%Y-%m-%d %H:%M:%S GMT+08" 2>/dev/null); then
-      :
-    else
-      exp_display="${exp_full:-${exp:-?}}"
-    fi
-  else
-    exp_display="${exp_full:-${exp:-?}}"
-  fi
-
+  local exp_display="${exp_full:-${exp:-?}}"
   if [[ "$raw" == http_* ]]; then
     exp_display="Invalid key"
   fi
 
-  if [[ "$raw" == http_* ]]; then
+  if [ -n "$raw" ]; then
     alert=1
   elif is_low_remain "$remain" "$total"; then
     alert=1
@@ -1371,35 +1351,34 @@ cmd_current() {
     alert=1
   fi
 
-  local top_left top_right vert horiz t_joint b_joint bottom_left bottom_right
-  top_left="$B_TL"; top_right="$B_TR"; bottom_left="$B_BL"; bottom_right="$B_BR"
-  vert="$B_V"; horiz="$B_H"; t_joint="$B_TT"; b_joint="$B_TB"
-  local border
-  border=$(printf "%s%s%s%s%s" \
-    "$top_left" \
-    "$(printf '%*s' $((label_w+2)) '' | tr ' ' "$horiz")" \
-    "$t_joint" \
-    "$(printf '%*s' $((value_w+2)) '' | tr ' ' "$horiz")" \
-    "$top_right")
+  local label_w=6 bar_len=20
+  local value_w=$(( (10 + 5) * 3 + 2 * 2 ))
+  # 加宽值列以完整显示 key/邮箱/到期时间
+  (( ${#key} > value_w )) && value_w=${#key}
+  (( ${#email} > value_w )) && value_w=${#email}
+  (( ${#exp_display} > value_w )) && value_w=${#exp_display}
 
   local key_display="$key"
-  if (( alert )); then
-    key_display=$(color_red "$key")
-  fi
+  (( alert )) && key_display=$(color_red "$key")
 
-  printf "%s\n" "$border"
-  printf "%s %-*s %s %-*s %s\n" "$vert" "$label_w" "No"    "$vert" "$value_w" "$cur"          "$vert"
-  printf "%s %-*s %s %-*s %s\n" "$vert" "$label_w" "Key"   "$vert" "$value_w" "$key_display" "$vert"
-  printf "%s %-*s %s %-*s %s\n" "$vert" "$label_w" "Email" "$vert" "$value_w" "${email:--}" "$vert"
-  printf "%s %-*s %s %-*s %s\n" "$vert" "$label_w" "Org ID" "$vert" "$value_w" "${org_id:--}" "$vert"
-  printf "%s %-*s %s %-*s %s\n" "$vert" "$label_w" "Usage" "$vert" "$value_w" "$bar $usage_text" "$vert"
-  printf "%s %-*s %s %-*s %s\n" "$vert" "$label_w" "Expiry" "$vert" "$value_w" "$exp_display" "$vert"
-  printf "%s%s%s%s%s\n" \
-    "$bottom_left" \
-    "$(printf '%*s' $((label_w+2)) '' | tr ' ' "$horiz")" \
-    "$b_joint" \
-    "$(printf '%*s' $((value_w+2)) '' | tr ' ' "$horiz")" \
-    "$bottom_right"
+  table_rule "$B_TL" "$B_TT" "$B_TR" "$label_w" "$value_w"
+  table_row "$(pad_cell "No" "$label_w")" "$(pad_cell "$cur" "$value_w")"
+  table_row "$(pad_cell "Key" "$label_w")" "$(pad_cell "$key_display" "$value_w")"
+  table_row "$(pad_cell "Email" "$label_w")" "$(pad_cell "${email:--}" "$value_w")"
+  if [ "$mode" = "rate" ] && [ -z "$raw" ]; then
+    local w pct
+    for w in 5h 7d 30d; do
+      case "$w" in 5h) pct="$five";; 7d) pct="$week";; 30d) pct="$month";; esac
+      table_row "$(pad_cell "$w" "$label_w")" \
+        "$(render_pct_bar "$pct" "$bar_len")$(printf '%*s' $(( value_w - bar_len - 5 )) "")"
+    done
+  else
+    local cells_w=$(( (10 + 5) * 3 + 2 * 2 ))
+    table_row "$(pad_cell "Usage" "$label_w")" \
+      "$(render_usage_cells "$mode" "$raw" "$five" "$week" "$month" "$used" "$total" 10 2)$(printf '%*s' $(( value_w - cells_w )) "")"
+  fi
+  table_row "$(pad_cell "Expiry" "$label_w")" "$(pad_cell "$exp_display" "$value_w")"
+  table_rule "$B_BL" "$B_TB" "$B_BR" "$label_w" "$value_w"
 
   echo
   local export_line="export FACTORY_API_KEY=${key}"
