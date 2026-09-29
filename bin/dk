@@ -123,6 +123,18 @@ mask_key() {
   fi
 }
 
+mask_email() {
+  local e="$1"
+  if [[ "$e" != *@* ]]; then echo "$e"; return; fi
+  local user="${e%@*}" domain="${e##*@}"
+  local len=${#user}
+  if (( len <= 4 )); then
+    echo "${user:0:1}***@${domain}"
+  else
+    echo "${user:0:3}...${user: -1}@${domain}"
+  fi
+}
+
 hash_keys_file() {
   if command -v sha1sum >/dev/null 2>&1; then
     sha1sum "$KEYS_ENC_FILE" 2>/dev/null | awk '{print $1}'
@@ -1152,7 +1164,7 @@ cmd_list() {
 
     ROW_NO+=("$i")
     ROW_KEY+=("$row_key")
-    ROW_EMAIL+=("${email:--}")
+    ROW_EMAIL+=("$(mask_email "${email:--}")")
     ROW_ORG+=("${org_id:--}")
     ROW_EXP+=("$row_exp")
     USAGE_TXT+=("$display_usage")
@@ -1492,6 +1504,7 @@ cmd_use() {
       REMAIN_ARR+=("$remain")
       EXP_ARR+=("$exp_display")
       KEY_DISP_ARR+=("$key_disp")
+      [[ -n "$email" ]] && email=$(mask_email "$email")
       if [[ -n "$email" && -n "$org_id" ]]; then
         IDENTITY_ARR+=("${email} | ${org_id}")
       elif [[ -n "$email" ]]; then

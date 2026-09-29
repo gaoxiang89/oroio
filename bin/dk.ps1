@@ -396,6 +396,19 @@ function Mask-Key {
     return "$prefix...$suffix"
 }
 
+function Mask-Email {
+    param([string]$Email)
+
+    $at = $Email.LastIndexOf('@')
+    if ($at -lt 0) { return $Email }
+    $user = $Email.Substring(0, $at)
+    $domain = $Email.Substring($at)
+    if ($user.Length -le 4) {
+        return $user.Substring(0, [Math]::Min(1, $user.Length)) + "***" + $domain
+    }
+    return $user.Substring(0, 3) + "..." + $user.Substring($user.Length - 1) + $domain
+}
+
 function Invalidate-Cache {
     if (Test-Path $script:CACHE_FILE) {
         Remove-Item $script:CACHE_FILE -Force -ErrorAction SilentlyContinue
@@ -1096,7 +1109,7 @@ function Cmd-List {
     $cellW = $barLen + 5
     $emailW = 5
     for ($i = 0; $i -lt $keys.Length; $i++) {
-        $len = ([string]$usageResults[$i].EMAIL).Length
+        $len = (Mask-Email -Email ([string]$usageResults[$i].EMAIL)).Length
         if ($len -gt $emailW) { $emailW = $len }
     }
     if ($emailW -gt 32) { $emailW = 32 }
@@ -1125,7 +1138,7 @@ function Cmd-List {
         Write-Host ("{0} {1,-4} " -f $marker, $idx) -NoNewline -ForegroundColor $rowColor
         Write-Host ("{0,-16} " -f $maskedKey) -NoNewline -ForegroundColor $(if ($alert) { "Red" } else { $rowColor })
 
-        $email = if ($usage.EMAIL) { [string]$usage.EMAIL } else { "-" }
+        $email = if ($usage.EMAIL) { Mask-Email -Email ([string]$usage.EMAIL) } else { "-" }
         if ($email.Length -gt $emailW) { $email = $email.Substring(0, $emailW - 3) + "..." }
         Write-Host ("{0,-$emailW}  " -f $email) -NoNewline -ForegroundColor $(if ($usage.EMAIL) { $rowColor } else { "DarkGray" })
 
