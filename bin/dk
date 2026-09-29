@@ -317,7 +317,7 @@ except Exception:
 fetch_identity() {
   local key="$1" parsed
   # 身份信息用于区分 key，不应拖慢主要用量请求或影响其成功状态。
-  dkm_http_get "$DKM_PROFILE_URL" "$key" 2 1
+  dkm_http_get "$DKM_PROFILE_URL" "$key" 6 2
   if [ "$DKM_HTTP_STATUS" = "200" ]; then
     parsed=$(printf "%s" "$DKM_HTTP_BODY" | parse_factory_identity_json) || parsed=""
     if [ -n "$parsed" ]; then

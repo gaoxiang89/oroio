@@ -276,7 +276,7 @@ def _get_json(url: str, key: str, timeout: int = API_TIMEOUT):
 def fetch_identity(key: str) -> dict:
     """Best-effort account identity lookup; usage remains available if it fails."""
     try:
-        data = _get_json(PROFILE_URL, key, timeout=2)
+        data = _get_json(PROFILE_URL, key, timeout=6)
         organization = data.get('organization') or {}
         profile = data.get('userProfile') or data.get('user') or {}
         org_id = organization.get('id') or data.get('organizationId') or data.get('organization_id') or ''

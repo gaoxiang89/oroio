@@ -348,7 +348,7 @@ function cleanIdentity(value: unknown): string {
 
 async function fetchIdentity(key: string): Promise<Pick<KeyUsage, 'orgId' | 'email'>> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 2000);
+  const timeout = setTimeout(() => controller.abort(), 6000);
   try {
     const profile = await fetchJson(PROFILE_URL, key, controller.signal);
     if (!profile.ok) return { orgId: '', email: '' };

@@ -23,6 +23,7 @@ $script:OROIO_DIR = Join-Path $env:USERPROFILE ".oroio"
 $script:KEYS_FILE = Join-Path $script:OROIO_DIR "keys.enc"
 $script:CURRENT_FILE = Join-Path $script:OROIO_DIR "current"
 $script:CACHE_FILE = Join-Path $script:OROIO_DIR "list_cache.b64"
+$script:IDENTITY_FILE = Join-Path $script:OROIO_DIR "identity_cache.json"
 $script:WEB_DIR = Join-Path $script:OROIO_DIR "web"
 $script:DK_PATH = if ($PSCommandPath) { $PSCommandPath } elseif ($MyInvocation.MyCommand.Path) { $MyInvocation.MyCommand.Path } else { $null }
 $script:DK_DIR = if ($script:DK_PATH) { Split-Path $script:DK_PATH -Parent } else { $null }
@@ -401,10 +402,66 @@ function Invalidate-Cache {
     }
 }
 
+function Get-KeyHash {
+    param([string]$Key)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Key))
+        return ([BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant()
+    } finally { $sha.Dispose() }
+}
+
+# 邮箱与 key 一一对应且不会变化，缓存到本地以免 auth/me 偶发超时导致显示为空。
+function Read-IdentityCache {
+    $cache = @{}
+    if (-not (Test-Path $script:IDENTITY_FILE)) { return $cache }
+    try {
+        $data = Get-Content -Raw -Path $script:IDENTITY_FILE -ErrorAction Stop | ConvertFrom-Json
+        foreach ($p in $data.PSObject.Properties) {
+            if ($p.Value) { $cache[$p.Name] = [string]$p.Value }
+        }
+    } catch {}
+    return $cache
+}
+
+function Save-IdentityCache {
+    param([hashtable]$Cache)
+    try {
+        $Cache | ConvertTo-Json -Compress | Set-Content -Path $script:IDENTITY_FILE -Encoding UTF8 -ErrorAction Stop
+    } catch {}
+}
+
+function Get-CachedEmail {
+    param([string]$Key)
+    $cache = Read-IdentityCache
+    $hash = Get-KeyHash -Key $Key
+    if ($cache.ContainsKey($hash)) { return $cache[$hash] }
+    return ""
+}
+
+function Update-IdentityCache {
+    param([string[]]$Keys, [hashtable]$Results)
+    $cache = Read-IdentityCache
+    $changed = $false
+    for ($i = 0; $i -lt $Keys.Length; $i++) {
+        $email = [string]$Results[$i].EMAIL
+        if (-not $email) { continue }
+        $hash = Get-KeyHash -Key $Keys[$i]
+        if ($cache[$hash] -ne $email) {
+            $cache[$hash] = $email
+            $changed = $true
+        }
+    }
+    if ($changed) { Save-IdentityCache -Cache $cache }
+}
+
 function New-EmptyUsage {
     return @{
         ORG_ID = ""
         EMAIL = ""
+        FIVE = $null
+        WEEK = $null
+        MONTH = $null
         MODE = ""
         DISPLAY = ""
         BALANCE = 0
@@ -474,6 +531,9 @@ function ConvertFrom-RateLimits {
         $coreUsed = [int][Math]::Round($coreMax)
     }
     $result.MODE = "rate"
+    $result.FIVE = [int][Math]::Round($std[0].Pct)
+    $result.WEEK = [int][Math]::Round($std[1].Pct)
+    $result.MONTH = [int][Math]::Round($std[2].Pct)
     $result.DISPLAY = ($parts -join " ")
     $result.TOTAL = 100
     $result.USED = $used
@@ -539,15 +599,18 @@ function Fetch-Usage {
         "Accept" = "application/json"
     }
 
-    try {
-        $profile = Invoke-RestMethod -Uri "https://api.factory.ai/api/app/auth/me" `
-            -Headers $headers -Method Get -TimeoutSec 2 -ErrorAction Stop
-        $result.ORG_ID = ([string]$profile.organization.id) -replace '[\r\n]+', ' '
-        $result.EMAIL = ([string]$profile.userProfile.email) -replace '[\r\n]+', ' '
+    # Identity is optional; do not fail an otherwise valid usage request.
+    for ($attempt = 1; $attempt -le 2; $attempt++) {
+        try {
+            $profile = Invoke-RestMethod -Uri "https://api.factory.ai/api/app/auth/me" `
+                -Headers $headers -Method Get -TimeoutSec 6 -ErrorAction Stop
+            $result.ORG_ID = ([string]$profile.organization.id) -replace '[\r\n]+', ' '
+            $result.EMAIL = ([string]$profile.userProfile.email) -replace '[\r\n]+', ' '
+            break
+        }
+        catch {}
     }
-    catch {
-        # Identity is optional; do not fail an otherwise valid usage request.
-    }
+    if (-not $result.EMAIL) { $result.EMAIL = Get-CachedEmail -Key $Key }
 
     for ($attempt = 1; $attempt -le $script:CURL_RETRIES; $attempt++) {
         try {
@@ -634,6 +697,69 @@ function Render-Bar {
     $dashes = "-" * ($Length - $fill)
     
     return "[$hashes$dashes]"
+}
+
+function Get-UsageColor {
+    param([double]$Pct)
+    if ($Pct -ge 80) { return "Red" }
+    if ($Pct -ge 50) { return "Yellow" }
+    return "Green"
+}
+
+# 输出一段彩色进度条: ████░░░░░░  23%（按已用百分比着色）
+function Write-UsageBar {
+    param(
+        $Pct,
+        [int]$Length = 10,
+        [string]$Label = ""
+    )
+    $full = [string][char]0x2588
+    $empty = [string][char]0x2591
+    if ($null -eq $Pct) {
+        Write-Host ($empty * $Length) -NoNewline -ForegroundColor DarkGray
+        Write-Host ("{0,5}" -f "-") -NoNewline -ForegroundColor DarkGray
+        return
+    }
+    $p = [double]$Pct
+    if ($p -lt 0) { $p = 0 }
+    if ($p -gt 100) { $p = 100 }
+    $fill = [int][Math]::Round($p / 100 * $Length)
+    if ($p -gt 0 -and $fill -eq 0) { $fill = 1 }
+    $color = Get-UsageColor -Pct $p
+    if ($fill -gt 0) { Write-Host ($full * $fill) -NoNewline -ForegroundColor $color }
+    if ($fill -lt $Length) { Write-Host ($empty * ($Length - $fill)) -NoNewline -ForegroundColor DarkGray }
+    $text = if ($Label) { " $Label" } else { "{0,4}%" -f [int][Math]::Round($p) }
+    Write-Host $text -NoNewline -ForegroundColor $color
+}
+
+# 用量单元格：rate 模式显示 5h/7d/30d 三段进度条，token 模式显示一条总额度进度条
+function Write-UsageCells {
+    param($Usage, [int]$BarLength = 10, [int]$Gap = 3)
+    $spacer = " " * $Gap
+    if ($Usage.RAW -like "http*" -or $Usage.RAW -eq "error") {
+        $cellWidth = ($BarLength + 5) * 3 + $Gap * 2
+        Write-Host ("{0,-$cellWidth}" -f "Invalid key / request failed") -NoNewline -ForegroundColor Red
+        return
+    }
+    if ($Usage.MODE -eq "rate") {
+        Write-UsageBar -Pct $Usage.FIVE -Length $BarLength
+        Write-Host $spacer -NoNewline
+        Write-UsageBar -Pct $Usage.WEEK -Length $BarLength
+        Write-Host $spacer -NoNewline
+        Write-UsageBar -Pct $Usage.MONTH -Length $BarLength
+        return
+    }
+    $cellWidth = ($BarLength + 5) * 3 + $Gap * 2
+    if ($Usage.TOTAL -gt 0) {
+        $pct = $Usage.USED / $Usage.TOTAL * 100
+        $label = "{0}/{1}" -f (Format-CompactNumber $Usage.USED), (Format-CompactNumber $Usage.TOTAL)
+        $barLen = $BarLength * 2
+        Write-UsageBar -Pct $pct -Length $barLen -Label $label
+        $pad = $cellWidth - $barLen - $label.Length - 1
+        if ($pad -gt 0) { Write-Host (" " * $pad) -NoNewline }
+    } else {
+        Write-Host ("{0,-$cellWidth}" -f "-") -NoNewline -ForegroundColor DarkGray
+    }
 }
 
 function Cmd-Add {
@@ -798,9 +924,9 @@ function Fetch-UsageParallel {
     if ($Keys.Length -lt $maxJobs) { $maxJobs = $Keys.Length }
     
     $scriptBlock = {
-        param([string]$Key, [int]$Timeout, [int]$Retries)
+        param([string]$Key, [int]$Timeout, [int]$Retries, [string]$CachedEmail)
         $result = @{
-            ORG_ID = ""; EMAIL = ""
+            ORG_ID = ""; EMAIL = ""; FIVE = $null; WEEK = $null; MONTH = $null
             MODE = ""; DISPLAY = ""; BALANCE = 0; BALANCE_NUM = 0; TOTAL = 0; USED = 0
             EXPIRES = "?"; EXTRA_CENTS = 0; CORE_USED = 0; OVERAGE_PREF = ""; RAW = ""
         }
@@ -809,12 +935,20 @@ function Fetch-UsageParallel {
             "User-Agent" = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
             "Accept" = "application/json"
         }
-        try {
-            $profile = Invoke-RestMethod -Uri "https://api.factory.ai/api/app/auth/me" `
-                -Headers $headers -Method Get -TimeoutSec 2 -ErrorAction Stop
-            $result.ORG_ID = ([string]$profile.organization.id) -replace '[\r\n]+', ' '
-            $result.EMAIL = ([string]$profile.userProfile.email) -replace '[\r\n]+', ' '
-        } catch {}
+        # 邮箱已缓存时跳过 auth/me；该接口常需 1-2s，不能用过短超时
+        if ($CachedEmail) {
+            $result.EMAIL = $CachedEmail
+        } else {
+            for ($attempt = 1; $attempt -le 2; $attempt++) {
+                try {
+                    $profile = Invoke-RestMethod -Uri "https://api.factory.ai/api/app/auth/me" `
+                        -Headers $headers -Method Get -TimeoutSec 6 -ErrorAction Stop
+                    $result.ORG_ID = ([string]$profile.organization.id) -replace '[\r\n]+', ' '
+                    $result.EMAIL = ([string]$profile.userProfile.email) -replace '[\r\n]+', ' '
+                    break
+                } catch {}
+            }
+        }
         $useLegacy = $true
         for ($attempt = 1; $attempt -le $Retries; $attempt++) {
             try {
@@ -828,6 +962,7 @@ function Fetch-UsageParallel {
                     if ($null -ne $std.monthly.usedPercent) { $month = [int][Math]::Round([double]$std.monthly.usedPercent) }
                     $used = $five; if ($week -gt $used) { $used = $week }; if ($month -gt $used) { $used = $month }
                     $result.MODE = "rate"
+                    $result.FIVE = $five; $result.WEEK = $week; $result.MONTH = $month
                     $result.DISPLAY = "5h $five% 7d $week% 30d $month%"
                     $result.TOTAL = 100
                     $result.USED = $used
@@ -915,11 +1050,14 @@ function Fetch-UsageParallel {
     $runspacePool = [runspacefactory]::CreateRunspacePool(1, $maxJobs)
     $runspacePool.Open()
     
+    $identityCache = Read-IdentityCache
     $jobs = @()
     for ($i = 0; $i -lt $Keys.Length; $i++) {
+        $hash = Get-KeyHash -Key $Keys[$i]
+        $cachedEmail = if ($identityCache.ContainsKey($hash)) { $identityCache[$hash] } else { "" }
         $ps = [powershell]::Create()
         $ps.RunspacePool = $runspacePool
-        [void]$ps.AddScript($scriptBlock).AddArgument($Keys[$i]).AddArgument($timeout).AddArgument($retries)
+        [void]$ps.AddScript($scriptBlock).AddArgument($Keys[$i]).AddArgument($timeout).AddArgument($retries).AddArgument($cachedEmail)
         $jobs += @{ Index = $i; PS = $ps; Handle = $ps.BeginInvoke() }
     }
     
@@ -934,7 +1072,8 @@ function Fetch-UsageParallel {
     }
     $runspacePool.Close()
     $runspacePool.Dispose()
-    
+
+    Update-IdentityCache -Keys $Keys -Results $results
     return $results
 }
 
@@ -952,41 +1091,46 @@ function Cmd-List {
     # 并发获取所有 key 的用量
     $usageResults = Fetch-UsageParallel -Keys $keys
     
+    $barLen = 10
+    $gap = 3
+    $cellW = $barLen + 5
+    $emailW = 5
+    for ($i = 0; $i -lt $keys.Length; $i++) {
+        $len = ([string]$usageResults[$i].EMAIL).Length
+        if ($len -gt $emailW) { $emailW = $len }
+    }
+    if ($emailW -gt 32) { $emailW = 32 }
+    $sp = " " * $gap
+    $usageW = $cellW * 3 + $gap * 2
+
     Write-Host ""
-    Write-Host ("  {0,-4} {1,-16} {2,-26} {3,-22} {4,-30} {5,-12}" -f "No", "Key", "Email", "Org ID", "Usage", "Expiry")
-    Write-Host ("  " + ("-" * 118))
-    
+    $header = "  {0,-4} {1,-16} {2,-$emailW}  {3,-$cellW}$sp{4,-$cellW}$sp{5,-$cellW}  {6}" -f "No", "Key", "Email", "5h", "7d", "30d", "Expiry"
+    Write-Host $header -ForegroundColor Gray
+    Write-Host ("  " + ([string][char]0x2500 * (4 + 1 + 16 + 1 + $emailW + 2 + $usageW + 2 + 10))) -ForegroundColor DarkGray
+
     for ($i = 0; $i -lt $keys.Length; $i++) {
         $key = $keys[$i]
         $idx = $i + 1
         $usage = $usageResults[$i]
-        
-        $marker = if ($idx -eq $currentIdx) { ">" } else { " " }
+        $isCurrent = ($idx -eq $currentIdx)
+
+        $marker = if ($isCurrent) { ">" } else { " " }
         $maskedKey = Mask-Key -Key $key
-        
-        $bar = Render-Bar -Remain $usage.BALANCE_NUM -Total $usage.TOTAL -Length 10
-        $usageText = if ($usage.DISPLAY) { $usage.DISPLAY } else { "{0}/{1}" -f (Format-CompactNumber $usage.USED), (Format-CompactNumber $usage.TOTAL) }
-        $usageDisplay = "$bar $usageText"
-        
-        $exp = $usage.EXPIRES
-        
-        $color = "White"
-        if ($usage.RAW -like "http*" -or $usage.BALANCE_NUM -le 0) {
-            $color = "Red"
-        }
-        elseif ($usage.TOTAL -gt 0 -and ($usage.BALANCE_NUM / $usage.TOTAL) -le 0.1) {
-            $color = "Red"
-        }
-        
-        if ($idx -eq $currentIdx) {
-            Write-Host ("{0} {1,-4} " -f $marker, $idx) -NoNewline -ForegroundColor Cyan
-        }
-        else {
-            Write-Host ("{0} {1,-4} " -f $marker, $idx) -NoNewline
-        }
-        $email = if ($usage.EMAIL) { $usage.EMAIL } else { "-" }
-        $orgId = if ($usage.ORG_ID) { $usage.ORG_ID } else { "-" }
-        Write-Host ("{0,-16} {1,-26} {2,-22} {3,-30} {4,-12}" -f $maskedKey, $email, $orgId, $usageDisplay, $exp) -ForegroundColor $color
+
+        $alert = $false
+        if ($usage.RAW -like "http*" -or $usage.RAW -eq "error" -or $usage.BALANCE_NUM -le 0) { $alert = $true }
+        elseif ($usage.TOTAL -gt 0 -and ($usage.BALANCE_NUM / $usage.TOTAL) -le 0.1) { $alert = $true }
+
+        $rowColor = if ($isCurrent) { "Cyan" } else { "White" }
+        Write-Host ("{0} {1,-4} " -f $marker, $idx) -NoNewline -ForegroundColor $rowColor
+        Write-Host ("{0,-16} " -f $maskedKey) -NoNewline -ForegroundColor $(if ($alert) { "Red" } else { $rowColor })
+
+        $email = if ($usage.EMAIL) { [string]$usage.EMAIL } else { "-" }
+        if ($email.Length -gt $emailW) { $email = $email.Substring(0, $emailW - 3) + "..." }
+        Write-Host ("{0,-$emailW}  " -f $email) -NoNewline -ForegroundColor $(if ($usage.EMAIL) { $rowColor } else { "DarkGray" })
+
+        Write-UsageCells -Usage $usage -BarLength $barLen -Gap $gap
+        Write-Host ("  {0}" -f $usage.EXPIRES) -ForegroundColor $(if ($alert) { "Red" } else { "Gray" })
     }
     Write-Host ""
 }
@@ -1009,11 +1153,18 @@ function Cmd-Current {
     Write-Host "  No:     $idx"
     Write-Host "  Key:    $key"
     Write-Host "  Email:  $(if ($usage.EMAIL) { $usage.EMAIL } else { '-' })"
-    Write-Host "  Org ID: $(if ($usage.ORG_ID) { $usage.ORG_ID } else { '-' })"
-    
-    $bar = Render-Bar -Remain $usage.BALANCE_NUM -Total $usage.TOTAL -Length 20
-    $usageText = if ($usage.DISPLAY) { $usage.DISPLAY } else { "{0}/{1}" -f (Format-CompactNumber $usage.USED), (Format-CompactNumber $usage.TOTAL) }
-    Write-Host "  Usage:  $bar $usageText"
+
+    if ($usage.MODE -eq "rate" -and -not ($usage.RAW -like "http*")) {
+        foreach ($w in @(@{ L = "5h"; P = $usage.FIVE }, @{ L = "7d"; P = $usage.WEEK }, @{ L = "30d"; P = $usage.MONTH })) {
+            Write-Host ("  {0,-7} " -f "$($w.L):") -NoNewline
+            Write-UsageBar -Pct $w.P -Length 20
+            Write-Host ""
+        }
+    } else {
+        Write-Host "  Usage:  " -NoNewline
+        Write-UsageCells -Usage $usage -BarLength 10
+        Write-Host ""
+    }
     Write-Host "  Expiry: $($usage.EXPIRES)"
     Write-Host ""
     
