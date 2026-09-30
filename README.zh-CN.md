@@ -44,7 +44,7 @@ dk import keys.txt
 # 将全部密钥导出到明文文件
 dk export keys-backup.txt
 
-# 2. 查看用量和到期时间
+# 2. 查看用量及各窗口截止时间
 dk list
 
 # 3. 运行 droid（自动注入密钥，额度耗尽时自动轮换）
@@ -64,7 +64,7 @@ droid
 | `dk import <路径>`     | 从明文文件导入密钥（自动去重）   |
 | `dk export <路径>`     | 将全部密钥导出到明文文件         |
 | `dk export --force <路径>` | 覆盖已有文件并导出全部密钥   |
-| `dk list`              | 显示所有密钥的用量和到期时间     |
+| `dk list`              | 显示所有密钥的用量及各窗口截止时间 |
 | `dk current`           | 显示当前密钥并复制 export 命令   |
 | `dk use <序号>`        | 按序号切换密钥                   |
 | `dk rm <序号...>`      | 按序号删除密钥                   |

@@ -84,7 +84,7 @@ Commands:
   add <key...>           add keys (or --file <path>)
   import <path>          import keys from a plaintext file
   export [--force] <path>  export all keys to a plaintext file
-  list                   list keys with balance/expiry
+  list                   list keys with usage-window end times
   current                show current key + export + clipboard
   use [index]            switch key (interactive if no index)
   run <cmd...>           run with key (auto-rotate on zero balance)
@@ -465,6 +465,17 @@ def pool_windows(pool, now):
         out.append({"pct": window_pct(w, now), "label": label, "w": w, "rem": rem_n})
     return out
 
+def window_end(w, rem, now):
+    dt = parse_iso(w.get("windowEnd"))
+    if dt is None and rem is not None:
+        try:
+            dt = datetime.fromtimestamp(now.timestamp() + rem, tz=timezone.utc)
+        except Exception:
+            dt = None
+    if dt is None:
+        return ""
+    return dt.astimezone().strftime("%m-%d %H:%M")
+
 def bottleneck(windows):
     def sort_key(item):
         rem = item["rem"] if item["rem"] is not None else 1e18
@@ -517,6 +528,9 @@ def emit_rate(data):
     print("FIVE=%d" % round(std[0]["pct"]))
     print("WEEK=%d" % round(std[1]["pct"]))
     print("MONTH=%d" % round(std[2]["pct"]))
+    print("FIVE_END=%s" % window_end(std[0]["w"], std[0]["rem"], now))
+    print("WEEK_END=%s" % window_end(std[1]["w"], std[1]["rem"], now))
+    print("MONTH_END=%s" % window_end(std[2]["w"], std[2]["rem"], now))
     print(f"DISPLAY={display}")
     print(f"BALANCE={remain}")
     print(f"BALANCE_NUM={remain}")
@@ -834,6 +848,22 @@ render_usage_cells() {
     return
   fi
   fixed_text "-" "$width" 90
+}
+
+# 在进度条下一行显示每个滚动窗口的本地截止时间。
+render_deadline_cells() {
+  local mode="$1" raw="$2" five_end="$3" week_end="$4" month_end="$5" cell_width="$6" gap="$7"
+  local sp; sp=$(printf '%*s' "$gap" "")
+  local end first=1
+  for end in "$five_end" "$week_end" "$month_end"; do
+    (( first )) || printf "%s" "$sp"
+    first=0
+    if [ "$mode" = "rate" ] && [ -z "$raw" ]; then
+      fixed_text "End ${end:--}" "$cell_width" 90
+    else
+      fixed_text "" "$cell_width"
+    fi
+  done
 }
 
 calc_remain() {
@@ -1195,31 +1225,33 @@ cmd_list() {
   cols=${COLUMNS:-$(tput cols 2>/dev/null || echo 120)}
 
   # 预解析每个 key 的数据（避免重复请求）
-  local -a ROW_NO ROW_KEY ROW_EMAIL ROW_EXP ROW_MODE ROW_RAW ROW_FIVE ROW_WEEK ROW_MONTH ROW_USED ROW_TOTAL
+  local -a ROW_NO ROW_KEY ROW_EMAIL ROW_MODE ROW_RAW ROW_FIVE ROW_WEEK ROW_MONTH ROW_FIVE_END ROW_WEEK_END ROW_MONTH_END ROW_USED ROW_TOTAL
   local i=0 emailw=5
   for line in "${KEYS[@]}"; do
     ((++i))
     IFS=$'\t' read -r key _ <<<"$line"
     info="${FETCH_INFOS[$((i-1))]}"
-    local balnum="" total="" used="" exp="" raw="" mode="" email="" five="" week="" month=""
+    local balnum="" total="" used="" raw="" mode="" email="" five="" week="" month="" five_end="" week_end="" month_end=""
     while IFS='=' read -r k v; do
       case "$k" in
         BALANCE_NUM) balnum="$v";;
         TOTAL) total="$v";;
         USED) used="$v";;
-        EXPIRES) exp="$v";;
         RAW) raw="$v";;
         MODE) mode="$v";;
         EMAIL) email="$v";;
         FIVE) five="$v";;
         WEEK) week="$v";;
         MONTH) month="$v";;
+        FIVE_END) five_end="$v";;
+        WEEK_END) week_end="$v";;
+        MONTH_END) month_end="$v";;
       esac
     done <<<"$info"
 
-    local remain key_disp marker row_exp alert=0
+    local remain key_disp marker alert=0
     remain=$(calc_remain "$balnum" "$total" "$used")
-    # 请求失败、余额<=0 或低于10% 标红（Key 与 Expiry 列）
+    # 请求失败、余额<=0 或低于10% 时将 Key 标红。
     if [ -n "$raw" ]; then
       alert=1
     elif is_low_remain "$remain" "$total"; then
@@ -1235,29 +1267,25 @@ cmd_list() {
     email=$(mask_email "${email:--}")
     (( ${#email} > emailw )) && emailw=${#email}
 
-    row_exp="${exp:-?}"
-    case "$row_exp" in
-      [Nn][Uu][Ll][Ll]) row_exp="?" ;;
-    esac
-    (( alert )) && row_exp=$(color_red "$row_exp")
-
     ROW_NO+=("$i")
     ROW_KEY+=("${marker}${key_disp}")
     ROW_EMAIL+=("$email")
-    ROW_EXP+=("$row_exp")
     ROW_MODE+=("$mode")
     ROW_RAW+=("$raw")
     ROW_FIVE+=("$five")
     ROW_WEEK+=("$week")
     ROW_MONTH+=("$month")
+    ROW_FIVE_END+=("$five_end")
+    ROW_WEEK_END+=("$week_end")
+    ROW_MONTH_END+=("$month_end")
     ROW_USED+=("$used")
     ROW_TOTAL+=("$total")
   done
   (( emailw > 32 )) && emailw=32
 
   # 列宽：进度条长度随终端宽度在 4~10 之间伸缩；边框与内边距共 列数*3+1
-  local now=4 keyw=16 expw=11 gap=2 bar_len=10
-  local avail=$(( cols - (now + keyw + emailw + expw + 5 * 3 + 1) ))
+  local now=4 keyw=16 gap=2 bar_len=10
+  local avail=$(( cols - (now + keyw + emailw + 4 * 3 + 1) ))
   bar_len=$(( (avail - gap * 2) / 3 - 5 ))
   (( bar_len > 10 )) && bar_len=10
   (( bar_len < 4 )) && bar_len=4
@@ -1267,14 +1295,13 @@ cmd_list() {
   local usage_head
   usage_head=$(printf "%-*s%*s%-*s%*s%-*s" "$cellw" "5h" "$gap" "" "$cellw" "7d" "$gap" "" "$cellw" "30d")
 
-  table_rule "$B_TL" "$B_TT" "$B_TR" "$now" "$keyw" "$emailw" "$usagew" "$expw"
+  table_rule "$B_TL" "$B_TT" "$B_TR" "$now" "$keyw" "$emailw" "$usagew"
   table_row \
     "$(pad_cell "$(color_black_bold "No")" "$now")" \
     "$(pad_cell "$(color_black_bold "Key")" "$keyw")" \
     "$(pad_cell "$(color_black_bold "Email")" "$emailw")" \
-    "$(color_black_bold "$usage_head")" \
-    "$(pad_cell "$(color_black_bold "Expiry")" "$expw")"
-  table_rule "$B_TL_MID" "$B_X" "$B_TR_MID" "$now" "$keyw" "$emailw" "$usagew" "$expw"
+    "$(color_black_bold "$usage_head")"
+  table_rule "$B_TL_MID" "$B_X" "$B_TR_MID" "$now" "$keyw" "$emailw" "$usagew"
 
   local idx
   for ((idx=0; idx<${#KEYS[@]}; idx++)); do
@@ -1282,10 +1309,14 @@ cmd_list() {
       "$(pad_cell "${ROW_NO[$idx]}" "$now")" \
       "$(clip_pad "${ROW_KEY[$idx]}" "$keyw")" \
       "$(clip_pad "${ROW_EMAIL[$idx]}" "$emailw")" \
-      "$(render_usage_cells "${ROW_MODE[$idx]}" "${ROW_RAW[$idx]}" "${ROW_FIVE[$idx]}" "${ROW_WEEK[$idx]}" "${ROW_MONTH[$idx]}" "${ROW_USED[$idx]}" "${ROW_TOTAL[$idx]}" "$bar_len" "$gap")" \
-      "$(pad_cell "${ROW_EXP[$idx]}" "$expw")"
+      "$(render_usage_cells "${ROW_MODE[$idx]}" "${ROW_RAW[$idx]}" "${ROW_FIVE[$idx]}" "${ROW_WEEK[$idx]}" "${ROW_MONTH[$idx]}" "${ROW_USED[$idx]}" "${ROW_TOTAL[$idx]}" "$bar_len" "$gap")"
+    table_row \
+      "$(pad_cell "" "$now")" \
+      "$(pad_cell "" "$keyw")" \
+      "$(pad_cell "" "$emailw")" \
+      "$(render_deadline_cells "${ROW_MODE[$idx]}" "${ROW_RAW[$idx]}" "${ROW_FIVE_END[$idx]}" "${ROW_WEEK_END[$idx]}" "${ROW_MONTH_END[$idx]}" "$cellw" "$gap")"
   done
-  table_rule "$B_BL" "$B_TB" "$B_BR" "$now" "$keyw" "$emailw" "$usagew" "$expw"
+  table_rule "$B_BL" "$B_TB" "$B_BR" "$now" "$keyw" "$emailw" "$usagew"
 }
 
 # 表格横线：table_rule 左 中 右 列宽...
@@ -1317,31 +1348,27 @@ cmd_current() {
   if (( cur > ${#KEYS[@]} )); then cur=1; fi
   IFS=$'\t' read -r key label <<<"${KEYS[$((cur-1))]}"
   info=$(fetch_usage "$key")
-  local exp="" exp_full="" balnum="" total="" used="" raw="" mode="" email="" five="" week="" month="" alert=0
+  local balnum="" total="" used="" raw="" mode="" email="" five="" week="" month="" five_end="" week_end="" month_end="" alert=0
   while IFS='=' read -r k v; do
     case "$k" in
       BALANCE_NUM) balnum="$v";;
       TOTAL) total="$v";;
       USED) used="$v";;
-      EXPIRES) exp="$v";;
-      EXPIRES_FULL) exp_full="$v";;
       RAW) raw="$v";;
       MODE) mode="$v";;
       EMAIL) email="$v";;
       FIVE) five="$v";;
       WEEK) week="$v";;
       MONTH) month="$v";;
+      FIVE_END) five_end="$v";;
+      WEEK_END) week_end="$v";;
+      MONTH_END) month_end="$v";;
     esac
   done <<<"$info"
   if [ -n "$email" ]; then printf '%s\t%s\n' "$key" "$email" | identity_cache_update || true; fi
 
   local remain
   remain=$(calc_remain "$balnum" "$total" "$used")
-
-  local exp_display="${exp_full:-${exp:-?}}"
-  if [[ "$raw" == http_* ]]; then
-    exp_display="Invalid key"
-  fi
 
   if [ -n "$raw" ]; then
     alert=1
@@ -1353,10 +1380,9 @@ cmd_current() {
 
   local label_w=6 bar_len=20
   local value_w=$(( (10 + 5) * 3 + 2 * 2 ))
-  # 加宽值列以完整显示 key/邮箱/到期时间
+  # 加宽值列以完整显示 key 和邮箱。
   (( ${#key} > value_w )) && value_w=${#key}
   (( ${#email} > value_w )) && value_w=${#email}
-  (( ${#exp_display} > value_w )) && value_w=${#exp_display}
 
   local key_display="$key"
   (( alert )) && key_display=$(color_red "$key")
@@ -1366,18 +1392,21 @@ cmd_current() {
   table_row "$(pad_cell "Key" "$label_w")" "$(pad_cell "$key_display" "$value_w")"
   table_row "$(pad_cell "Email" "$label_w")" "$(pad_cell "${email:--}" "$value_w")"
   if [ "$mode" = "rate" ] && [ -z "$raw" ]; then
-    local w pct
+    local w pct end usage_value
     for w in 5h 7d 30d; do
-      case "$w" in 5h) pct="$five";; 7d) pct="$week";; 30d) pct="$month";; esac
-      table_row "$(pad_cell "$w" "$label_w")" \
-        "$(render_pct_bar "$pct" "$bar_len")$(printf '%*s' $(( value_w - bar_len - 5 )) "")"
+      case "$w" in
+        5h) pct="$five"; end="$five_end";;
+        7d) pct="$week"; end="$week_end";;
+        30d) pct="$month"; end="$month_end";;
+      esac
+      usage_value="$(render_pct_bar "$pct" "$bar_len")  $(color_code 90 "End ${end:--}")"
+      table_row "$(pad_cell "$w" "$label_w")" "$(pad_cell "$usage_value" "$value_w")"
     done
   else
     local cells_w=$(( (10 + 5) * 3 + 2 * 2 ))
     table_row "$(pad_cell "Usage" "$label_w")" \
       "$(render_usage_cells "$mode" "$raw" "$five" "$week" "$month" "$used" "$total" 10 2)$(printf '%*s' $(( value_w - cells_w )) "")"
   fi
-  table_row "$(pad_cell "Expiry" "$label_w")" "$(pad_cell "$exp_display" "$value_w")"
   table_rule "$B_BL" "$B_TB" "$B_BR" "$label_w" "$value_w"
 
   echo

@@ -64,7 +64,7 @@ Here's what `dk list` looks like:
 | `dk import <path>`     | Import keys from plaintext (deduplicated)   |
 | `dk export <path>`     | Export all keys to a plaintext file         |
 | `dk export --force <path>` | Overwrite a file and export all keys    |
-| `dk list`              | Show all keys with usage/expiration         |
+| `dk list`              | Show all keys with usage-window end times   |
 | `dk current`           | Display current key and copy export command |
 | `dk use <n>`           | Switch to key by index                      |
 | `dk rm <n...>`         | Remove keys by index                        |

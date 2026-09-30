@@ -40,7 +40,7 @@ Commands:
   add <key...>           add keys (or -File <path>)
   import <path>          import keys from a plaintext file
   export [-Force] <path> export all keys to a plaintext file
-  list                   list keys with balance/expiry
+  list                   list keys with usage-window end times
   current                show current key + export + clipboard
   use [index]            switch key (interactive if no index)
   serve [start|stop|status]  web dashboard (automatic port; DKM_SERVE_PORT to override)
@@ -475,6 +475,9 @@ function New-EmptyUsage {
         FIVE = $null
         WEEK = $null
         MONTH = $null
+        FIVE_END = ""
+        WEEK_END = ""
+        MONTH_END = ""
         MODE = ""
         DISPLAY = ""
         BALANCE = 0
@@ -520,6 +523,18 @@ function ConvertFrom-RateLimits {
         return @{ Pct = $pct; Rem = $rem; End = $end }
     }
 
+    function Format-WindowEnd($window) {
+        $endDt = $null
+        if ($null -ne $window.End) {
+            try { $endDt = [DateTimeOffset]::Parse($window.End.ToString()) } catch {}
+        }
+        if ($null -eq $endDt -and $null -ne $window.Rem) {
+            try { $endDt = $now.AddSeconds([double]$window.Rem) } catch {}
+        }
+        if ($null -eq $endDt) { return "" }
+        return $endDt.ToLocalTime().ToString("MM-dd HH:mm")
+    }
+
     $std = @()
     foreach ($item in $labels) {
         $info = Get-WindowInfo $Data.limits.standard.($item.Key)
@@ -547,6 +562,9 @@ function ConvertFrom-RateLimits {
     $result.FIVE = [int][Math]::Round($std[0].Pct)
     $result.WEEK = [int][Math]::Round($std[1].Pct)
     $result.MONTH = [int][Math]::Round($std[2].Pct)
+    $result.FIVE_END = Format-WindowEnd ($std[0])
+    $result.WEEK_END = Format-WindowEnd ($std[1])
+    $result.MONTH_END = Format-WindowEnd ($std[2])
     $result.DISPLAY = ($parts -join " ")
     $result.TOTAL = 100
     $result.USED = $used
@@ -775,6 +793,20 @@ function Write-UsageCells {
     }
 }
 
+# 在进度条下一行显示每个滚动窗口的本地截止时间。
+function Write-DeadlineCells {
+    param($Usage, [int]$CellWidth = 15, [int]$Gap = 3)
+    $ends = @($Usage.FIVE_END, $Usage.WEEK_END, $Usage.MONTH_END)
+    for ($i = 0; $i -lt $ends.Length; $i++) {
+        if ($i -gt 0) { Write-Host (" " * $Gap) -NoNewline }
+        $text = if ($Usage.MODE -eq "rate" -and -not $Usage.RAW) {
+            "End " + $(if ($ends[$i]) { $ends[$i] } else { "-" })
+        } else { "" }
+        if ($text.Length -gt $CellWidth) { $text = $text.Substring(0, $CellWidth) }
+        Write-Host ("{0,-$CellWidth}" -f $text) -NoNewline -ForegroundColor DarkGray
+    }
+}
+
 function Cmd-Add {
     param([string[]]$AddArgs)
     
@@ -940,6 +972,7 @@ function Fetch-UsageParallel {
         param([string]$Key, [int]$Timeout, [int]$Retries, [string]$CachedEmail)
         $result = @{
             ORG_ID = ""; EMAIL = ""; FIVE = $null; WEEK = $null; MONTH = $null
+            FIVE_END = ""; WEEK_END = ""; MONTH_END = ""
             MODE = ""; DISPLAY = ""; BALANCE = 0; BALANCE_NUM = 0; TOTAL = 0; USED = 0
             EXPIRES = "?"; EXTRA_CENTS = 0; CORE_USED = 0; OVERAGE_PREF = ""; RAW = ""
         }
@@ -947,6 +980,17 @@ function Fetch-UsageParallel {
             "Authorization" = "Bearer $Key"
             "User-Agent" = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
             "Accept" = "application/json"
+        }
+        function Get-WindowDeadline($window) {
+            $endDt = $null
+            if ($null -ne $window -and $null -ne $window.windowEnd) {
+                try { $endDt = [DateTimeOffset]::Parse($window.windowEnd.ToString()) } catch {}
+            }
+            if ($null -eq $endDt -and $null -ne $window -and $null -ne $window.secondsRemaining) {
+                try { $endDt = [DateTimeOffset]::UtcNow.AddSeconds([double]$window.secondsRemaining) } catch {}
+            }
+            if ($null -eq $endDt) { return "" }
+            return $endDt.ToLocalTime().ToString("MM-dd HH:mm")
         }
         # 邮箱已缓存时跳过 auth/me；该接口常需 1-2s，不能用过短超时
         if ($CachedEmail) {
@@ -976,6 +1020,9 @@ function Fetch-UsageParallel {
                     $used = $five; if ($week -gt $used) { $used = $week }; if ($month -gt $used) { $used = $month }
                     $result.MODE = "rate"
                     $result.FIVE = $five; $result.WEEK = $week; $result.MONTH = $month
+                    $result.FIVE_END = Get-WindowDeadline ($std.fiveHour)
+                    $result.WEEK_END = Get-WindowDeadline ($std.weekly)
+                    $result.MONTH_END = Get-WindowDeadline ($std.monthly)
                     $result.DISPLAY = "5h $five% 7d $week% 30d $month%"
                     $result.TOTAL = 100
                     $result.USED = $used
@@ -1117,9 +1164,9 @@ function Cmd-List {
     $usageW = $cellW * 3 + $gap * 2
 
     Write-Host ""
-    $header = "  {0,-4} {1,-16} {2,-$emailW}  {3,-$cellW}$sp{4,-$cellW}$sp{5,-$cellW}  {6}" -f "No", "Key", "Email", "5h", "7d", "30d", "Expiry"
+    $header = "  {0,-4} {1,-16} {2,-$emailW}  {3,-$cellW}$sp{4,-$cellW}$sp{5,-$cellW}" -f "No", "Key", "Email", "5h", "7d", "30d"
     Write-Host $header -ForegroundColor Gray
-    Write-Host ("  " + ([string][char]0x2500 * (4 + 1 + 16 + 1 + $emailW + 2 + $usageW + 2 + 10))) -ForegroundColor DarkGray
+    Write-Host ("  " + ([string][char]0x2500 * (4 + 1 + 16 + 1 + $emailW + 2 + $usageW))) -ForegroundColor DarkGray
 
     for ($i = 0; $i -lt $keys.Length; $i++) {
         $key = $keys[$i]
@@ -1143,7 +1190,10 @@ function Cmd-List {
         Write-Host ("{0,-$emailW}  " -f $email) -NoNewline -ForegroundColor $(if ($usage.EMAIL) { $rowColor } else { "DarkGray" })
 
         Write-UsageCells -Usage $usage -BarLength $barLen -Gap $gap
-        Write-Host ("  {0}" -f $usage.EXPIRES) -ForegroundColor $(if ($alert) { "Red" } else { "Gray" })
+        Write-Host ""
+        Write-Host ("  {0,-4} {1,-16} {2,-$emailW}  " -f "", "", "") -NoNewline
+        Write-DeadlineCells -Usage $usage -CellWidth $cellW -Gap $gap
+        Write-Host ""
     }
     Write-Host ""
 }
@@ -1168,9 +1218,14 @@ function Cmd-Current {
     Write-Host "  Email:  $(if ($usage.EMAIL) { $usage.EMAIL } else { '-' })"
 
     if ($usage.MODE -eq "rate" -and -not ($usage.RAW -like "http*")) {
-        foreach ($w in @(@{ L = "5h"; P = $usage.FIVE }, @{ L = "7d"; P = $usage.WEEK }, @{ L = "30d"; P = $usage.MONTH })) {
+        foreach ($w in @(
+            @{ L = "5h"; P = $usage.FIVE; E = $usage.FIVE_END },
+            @{ L = "7d"; P = $usage.WEEK; E = $usage.WEEK_END },
+            @{ L = "30d"; P = $usage.MONTH; E = $usage.MONTH_END }
+        )) {
             Write-Host ("  {0,-7} " -f "$($w.L):") -NoNewline
             Write-UsageBar -Pct $w.P -Length 20
+            Write-Host ("  End {0}" -f $(if ($w.E) { $w.E } else { "-" })) -NoNewline -ForegroundColor DarkGray
             Write-Host ""
         }
     } else {
@@ -1178,7 +1233,6 @@ function Cmd-Current {
         Write-UsageCells -Usage $usage -BarLength 10
         Write-Host ""
     }
-    Write-Host "  Expiry: $($usage.EXPIRES)"
     Write-Host ""
     
     $exportLine = "`$env:FACTORY_API_KEY=`"$key`""
