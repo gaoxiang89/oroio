@@ -658,15 +658,16 @@ function Fetch-Usage {
         catch [System.Net.WebException] {
             $statusCode = [int]$_.Exception.Response.StatusCode
             if ($statusCode -eq 404) { break }
-            if ($statusCode -ge 400 -and $statusCode -lt 500) {
+            if ($statusCode -eq 429 -and $attempt -ge $script:CURL_RETRIES) { $result.RAW = "rate_limited"; return $result }
+            if ($statusCode -ge 400 -and $statusCode -lt 500 -and $statusCode -ne 429) {
                 $result.RAW = "http_$statusCode"
                 $result.EXPIRES = "Invalid key"
                 return $result
             }
-            if ($attempt -lt $script:CURL_RETRIES) { Start-Sleep -Milliseconds 500 }
+            if ($attempt -lt $script:CURL_RETRIES) { Start-Sleep -Seconds $attempt }
         }
         catch {
-            if ($attempt -lt $script:CURL_RETRIES) { Start-Sleep -Milliseconds 500 }
+            if ($attempt -lt $script:CURL_RETRIES) { Start-Sleep -Seconds $attempt }
         }
     }
 
@@ -681,20 +682,19 @@ function Fetch-Usage {
         }
         catch [System.Net.WebException] {
             $statusCode = [int]$_.Exception.Response.StatusCode
-            if ($statusCode -ge 400 -and $statusCode -lt 500) {
+            if ($statusCode -ge 400 -and $statusCode -lt 500 -and $statusCode -ne 429) {
                 $result.RAW = "http_$statusCode"
                 $result.EXPIRES = "Invalid key"
                 return $result
             }
-            if ($attempt -lt $script:CURL_RETRIES) { Start-Sleep -Milliseconds 500 }
+            if ($attempt -lt $script:CURL_RETRIES) { Start-Sleep -Seconds $attempt }
         }
         catch {
-            if ($attempt -lt $script:CURL_RETRIES) { Start-Sleep -Milliseconds 500 }
+            if ($attempt -lt $script:CURL_RETRIES) { Start-Sleep -Seconds $attempt }
         }
     }
 
-    $result.RAW = "http_error"
-    $result.EXPIRES = "Invalid key"
+    $result.RAW = "request_failed"
     return $result
 }
 
@@ -765,18 +765,28 @@ function Write-UsageBar {
 
 # 用量单元格：rate 模式显示 5h/7d/30d 三段进度条，token 模式显示一条总额度进度条
 function Write-UsageCells {
-    param($Usage, [int]$BarLength = 10, [int]$Gap = 3)
-    $spacer = " " * $Gap
-    if ($Usage.RAW -like "http*" -or $Usage.RAW -eq "error") {
+    # -Bordered 时三段之间画表格竖线（Gap 须为 3）
+    param($Usage, [int]$BarLength = 10, [int]$Gap = 3, [switch]$Bordered)
+    if ($Usage.RAW -match '^http_4\d\d$') {
         $cellWidth = ($BarLength + 5) * 3 + $Gap * 2
-        Write-Host ("{0,-$cellWidth}" -f "Invalid key / request failed") -NoNewline -ForegroundColor Red
+        Write-Host ("{0,-$cellWidth}" -f "Invalid key") -NoNewline -ForegroundColor Red
+        return
+    }
+    if ($Usage.RAW) {
+        # 重试后仍失败：各列只显示 -
+        $cellW = $BarLength + 5
+        Write-Host ("{0,-$cellW}" -f "-") -NoNewline -ForegroundColor DarkGray
+        Write-CellGap -Gap $Gap -Bordered:$Bordered
+        Write-Host ("{0,-$cellW}" -f "-") -NoNewline -ForegroundColor DarkGray
+        Write-CellGap -Gap $Gap -Bordered:$Bordered
+        Write-Host ("{0,-$cellW}" -f "-") -NoNewline -ForegroundColor DarkGray
         return
     }
     if ($Usage.MODE -eq "rate") {
         Write-UsageBar -Pct $Usage.FIVE -Length $BarLength
-        Write-Host $spacer -NoNewline
+        Write-CellGap -Gap $Gap -Bordered:$Bordered
         Write-UsageBar -Pct $Usage.WEEK -Length $BarLength
-        Write-Host $spacer -NoNewline
+        Write-CellGap -Gap $Gap -Bordered:$Bordered
         Write-UsageBar -Pct $Usage.MONTH -Length $BarLength
         return
     }
@@ -793,18 +803,60 @@ function Write-UsageCells {
     }
 }
 
+# 窗口内无用量时接口不返回 windowEnd（窗口尚未开始），此时只显示 -
+function Format-WindowEndLabel {
+    param($End)
+    if ($End) { return "End $End" }
+    return "-"
+}
+
 # 在进度条下一行显示每个滚动窗口的本地截止时间。
 function Write-DeadlineCells {
-    param($Usage, [int]$CellWidth = 15, [int]$Gap = 3)
+    param($Usage, [int]$CellWidth = 15, [int]$Gap = 3, [switch]$Bordered)
+    if ($Usage.MODE -ne "rate" -or $Usage.RAW) {
+        # 与 Write-UsageCells 一致：非 rate 行占满整个用量区域，不画分隔
+        Write-Host (" " * ($CellWidth * 3 + $Gap * 2)) -NoNewline
+        return
+    }
     $ends = @($Usage.FIVE_END, $Usage.WEEK_END, $Usage.MONTH_END)
     for ($i = 0; $i -lt $ends.Length; $i++) {
-        if ($i -gt 0) { Write-Host (" " * $Gap) -NoNewline }
-        $text = if ($Usage.MODE -eq "rate" -and -not $Usage.RAW) {
-            "End " + $(if ($ends[$i]) { $ends[$i] } else { "-" })
-        } else { "" }
+        if ($i -gt 0) { Write-CellGap -Gap $Gap -Bordered:$Bordered }
+        $text = Format-WindowEndLabel $ends[$i]
         if ($text.Length -gt $CellWidth) { $text = $text.Substring(0, $CellWidth) }
         Write-Host ("{0,-$CellWidth}" -f $text) -NoNewline -ForegroundColor DarkGray
     }
+}
+
+# 表格边框字符（用码点构造，避免无 BOM 脚本在 PowerShell 5.1 下乱码）
+$script:Box = @{
+    H = [string][char]0x2500; V = [string][char]0x2502
+    TL = [string][char]0x250C; TR = [string][char]0x2510; BL = [string][char]0x2514; BR = [string][char]0x2518
+    TT = [string][char]0x252C; TB = [string][char]0x2534; LM = [string][char]0x251C; RM = [string][char]0x2524; X = [string][char]0x253C
+}
+
+function Write-CellGap {
+    param([int]$Gap = 3, [switch]$Bordered)
+    if ($Bordered) { Write-Host (" " + $script:Box.V + " ") -NoNewline -ForegroundColor DarkGray }
+    else { Write-Host (" " * $Gap) -NoNewline }
+}
+
+# 表格横线：Write-TableRule 左 中 右 列宽数组
+function Write-TableRule {
+    param([string]$Left, [string]$Mid, [string]$Right, [int[]]$Widths)
+    $parts = foreach ($w in $Widths) { $script:Box.H * ($w + 2) }
+    Write-Host ($Left + ($parts -join $Mid) + $Right) -ForegroundColor DarkGray
+}
+
+# 输出一个带左边框的单元格：│ text
+function Write-TableCell {
+    param([string]$Text, [int]$Width, [string]$Color = "Gray")
+    if ($Text.Length -gt $Width) { $Text = $Text.Substring(0, $Width - 3) + "..." }
+    Write-Host ($script:Box.V + " ") -NoNewline -ForegroundColor DarkGray
+    Write-Host ("{0,-$Width} " -f $Text) -NoNewline -ForegroundColor $Color
+}
+
+function Write-TableRowEnd {
+    Write-Host $script:Box.V -ForegroundColor DarkGray
 }
 
 function Cmd-Add {
@@ -1044,13 +1096,14 @@ function Fetch-UsageParallel {
             } catch [System.Net.WebException] {
                 $statusCode = [int]$_.Exception.Response.StatusCode
                 if ($statusCode -eq 404) { break }
-                if ($statusCode -ge 400 -and $statusCode -lt 500) {
+                if ($statusCode -eq 429 -and $attempt -ge $Retries) { $result.RAW = "rate_limited"; return $result }
+                if ($statusCode -ge 400 -and $statusCode -lt 500 -and $statusCode -ne 429) {
                     $result.RAW = "http_$statusCode"; $result.EXPIRES = "Invalid key"
                     return $result
                 }
-                if ($attempt -lt $Retries) { Start-Sleep -Milliseconds 500 }
+                if ($attempt -lt $Retries) { Start-Sleep -Seconds $attempt }
             } catch {
-                if ($attempt -lt $Retries) { Start-Sleep -Milliseconds 500 }
+                if ($attempt -lt $Retries) { Start-Sleep -Seconds $attempt }
             }
         }
         for ($attempt = 1; $attempt -le $Retries; $attempt++) {
@@ -1094,16 +1147,16 @@ function Fetch-UsageParallel {
                 return $result
             } catch [System.Net.WebException] {
                 $statusCode = [int]$_.Exception.Response.StatusCode
-                if ($statusCode -ge 400 -and $statusCode -lt 500) {
+                if ($statusCode -ge 400 -and $statusCode -lt 500 -and $statusCode -ne 429) {
                     $result.RAW = "http_$statusCode"; $result.EXPIRES = "Invalid key"
                     return $result
                 }
-                if ($attempt -lt $Retries) { Start-Sleep -Milliseconds 500 }
+                if ($attempt -lt $Retries) { Start-Sleep -Seconds $attempt }
             } catch {
-                if ($attempt -lt $Retries) { Start-Sleep -Milliseconds 500 }
+                if ($attempt -lt $Retries) { Start-Sleep -Seconds $attempt }
             }
         }
-        $result.RAW = "http_error"; $result.EXPIRES = "Invalid key"
+        $result.RAW = "request_failed"
         return $result
     }
     
@@ -1154,19 +1207,22 @@ function Cmd-List {
     $barLen = 10
     $gap = 3
     $cellW = $barLen + 5
+    $noW = 4
+    $keyW = 13
     $emailW = 5
     for ($i = 0; $i -lt $keys.Length; $i++) {
         $len = (Mask-Email -Email ([string]$usageResults[$i].EMAIL)).Length
         if ($len -gt $emailW) { $emailW = $len }
     }
     if ($emailW -gt 32) { $emailW = 32 }
-    $sp = " " * $gap
-    $usageW = $cellW * 3 + $gap * 2
+    $widths = @($noW, $keyW, $emailW, $cellW, $cellW, $cellW)
+    $B = $script:Box
 
-    Write-Host ""
-    $header = "  {0,-4} {1,-16} {2,-$emailW}  {3,-$cellW}$sp{4,-$cellW}$sp{5,-$cellW}" -f "No", "Key", "Email", "5h", "7d", "30d"
-    Write-Host $header -ForegroundColor Gray
-    Write-Host ("  " + ([string][char]0x2500 * (4 + 1 + 16 + 1 + $emailW + 2 + $usageW))) -ForegroundColor DarkGray
+    Write-TableRule $B.TL $B.TT $B.TR $widths
+    foreach ($h in @(@("No", $noW), @("Key", $keyW), @("Email", $emailW), @("5h", $cellW), @("7d", $cellW), @("30d", $cellW))) {
+        Write-TableCell -Text $h[0] -Width $h[1] -Color White
+    }
+    Write-TableRowEnd
 
     for ($i = 0; $i -lt $keys.Length; $i++) {
         $key = $keys[$i]
@@ -1174,28 +1230,34 @@ function Cmd-List {
         $usage = $usageResults[$i]
         $isCurrent = ($idx -eq $currentIdx)
 
-        $marker = if ($isCurrent) { ">" } else { " " }
+        $marker = if ($isCurrent) { [string][char]0x25B8 } else { " " }
         $maskedKey = Mask-Key -Key $key
 
         $alert = $false
-        if ($usage.RAW -like "http*" -or $usage.RAW -eq "error" -or $usage.BALANCE_NUM -le 0) { $alert = $true }
+        if ($usage.RAW -or $usage.BALANCE_NUM -le 0) { $alert = $true }
         elseif ($usage.TOTAL -gt 0 -and ($usage.BALANCE_NUM / $usage.TOTAL) -le 0.1) { $alert = $true }
 
-        $rowColor = if ($isCurrent) { "Cyan" } else { "White" }
-        Write-Host ("{0} {1,-4} " -f $marker, $idx) -NoNewline -ForegroundColor $rowColor
-        Write-Host ("{0,-16} " -f $maskedKey) -NoNewline -ForegroundColor $(if ($alert) { "Red" } else { $rowColor })
-
+        $rowColor = if ($isCurrent) { "Cyan" } else { "Gray" }
         $email = if ($usage.EMAIL) { Mask-Email -Email ([string]$usage.EMAIL) } else { "-" }
-        if ($email.Length -gt $emailW) { $email = $email.Substring(0, $emailW - 3) + "..." }
-        Write-Host ("{0,-$emailW}  " -f $email) -NoNewline -ForegroundColor $(if ($usage.EMAIL) { $rowColor } else { "DarkGray" })
 
-        Write-UsageCells -Usage $usage -BarLength $barLen -Gap $gap
-        Write-Host ""
-        Write-Host ("  {0,-4} {1,-16} {2,-$emailW}  " -f "", "", "") -NoNewline
-        Write-DeadlineCells -Usage $usage -CellWidth $cellW -Gap $gap
-        Write-Host ""
+        Write-TableRule $B.LM $B.X $B.RM $widths
+        Write-TableCell -Text ("{0} {1}" -f $marker, $idx) -Width $noW -Color $rowColor
+        Write-TableCell -Text $maskedKey -Width $keyW -Color $(if ($alert) { "Red" } else { $rowColor })
+        Write-TableCell -Text $email -Width $emailW -Color $(if ($usage.EMAIL) { $rowColor } else { "DarkGray" })
+        Write-Host ($B.V + " ") -NoNewline -ForegroundColor DarkGray
+        Write-UsageCells -Usage $usage -BarLength $barLen -Gap $gap -Bordered
+        Write-Host " " -NoNewline
+        Write-TableRowEnd
+
+        Write-TableCell -Text "" -Width $noW
+        Write-TableCell -Text "" -Width $keyW
+        Write-TableCell -Text "" -Width $emailW
+        Write-Host ($B.V + " ") -NoNewline -ForegroundColor DarkGray
+        Write-DeadlineCells -Usage $usage -CellWidth $cellW -Gap $gap -Bordered
+        Write-Host " " -NoNewline
+        Write-TableRowEnd
     }
-    Write-Host ""
+    Write-TableRule $B.BL $B.TB $B.BR $widths
 }
 
 function Cmd-Current {
@@ -1217,7 +1279,7 @@ function Cmd-Current {
     Write-Host "  Key:    $key"
     Write-Host "  Email:  $(if ($usage.EMAIL) { $usage.EMAIL } else { '-' })"
 
-    if ($usage.MODE -eq "rate" -and -not ($usage.RAW -like "http*")) {
+    if ($usage.MODE -eq "rate" -and -not $usage.RAW) {
         foreach ($w in @(
             @{ L = "5h"; P = $usage.FIVE; E = $usage.FIVE_END },
             @{ L = "7d"; P = $usage.WEEK; E = $usage.WEEK_END },
@@ -1225,7 +1287,7 @@ function Cmd-Current {
         )) {
             Write-Host ("  {0,-7} " -f "$($w.L):") -NoNewline
             Write-UsageBar -Pct $w.P -Length 20
-            Write-Host ("  End {0}" -f $(if ($w.E) { $w.E } else { "-" })) -NoNewline -ForegroundColor DarkGray
+            Write-Host ("  " + (Format-WindowEndLabel $w.E)) -NoNewline -ForegroundColor DarkGray
             Write-Host ""
         }
     } else {

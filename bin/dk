@@ -58,10 +58,10 @@ use_ascii_borders() {
   [[ "${DKM_ASCII:-}" == "1" ]] && return 0  # ASCII
   [[ "${DKM_ASCII:-}" == "0" ]] && return 1  # Unicode
   
-  # 无配置 → 智能检测
+  # 无配置 → 智能检测：Linux 虚拟控制台/哑终端字体不含制表符
+  case "${TERM:-}" in linux|dumb|vt100|vt220) return 0;; esac
   local lc="${LC_ALL:-${LC_CTYPE:-${LANG:-}}}"
-  [[ "$lc" =~ ^C\.UTF-?8$ ]] && return 0     # C.UTF-8 → ASCII
-  [[ "$lc" =~ UTF-?8 ]] && return 1          # 其他 UTF-8 → Unicode
+  [[ "$lc" =~ [Uu][Tt][Ff]-?8 ]] && return 1  # UTF-8（含 C.UTF-8）→ Unicode
   return 0                                    # 无 UTF-8 → ASCII
 }
 
@@ -69,12 +69,12 @@ if use_ascii_borders; then
   B_TL='+'; B_TR='+'; B_BL='+'; B_BR='+'
   B_H='-'; B_V='|'
   B_TT='+'; B_TB='+'; B_TL_MID='+'; B_TR_MID='+'; B_X='+'
-  B_FULL='#'; B_EMPTY='-'
+  B_FULL='#'; B_EMPTY='.'; B_MARK='>'
 else
   B_TL='┌'; B_TR='┐'; B_BL='└'; B_BR='┘'
   B_H='─'; B_V='│'
   B_TT='┬'; B_TB='┴'; B_TL_MID='├'; B_TR_MID='┤'; B_X='┼'
-  B_FULL='█'; B_EMPTY='░'
+  B_FULL='█'; B_EMPTY='░'; B_MARK='▶'
 fi
 
 usage() {
@@ -235,6 +235,11 @@ cache_load_infos() {
 cache_save_infos() {
   local ttl="$DKM_CACHE_TTL"
   (( ttl > 0 )) || return 0
+  # 有请求最终失败时不缓存，下次 list 重新获取
+  local info
+  for info in "${FETCH_INFOS[@]}"; do
+    [[ "$info" =~ (^|$'\n')RAW=([^h$'\n']|h[^t]) ]] && return 0
+  done
   local sig; sig=$(hash_keys_file)
   local now; now=$(date +%s)
   local idx
@@ -301,11 +306,12 @@ dkm_http_get() {
       DKM_HTTP_STATUS=${resp##*$'\n'}
       DKM_HTTP_BODY=${resp%$'\n'*}
       [[ "$DKM_HTTP_STATUS" =~ ^[0-9]{3}$ ]] || DKM_HTTP_STATUS=000
-      if [ "$DKM_HTTP_STATUS" = "200" ] || [[ "$DKM_HTTP_STATUS" =~ ^4[0-9]{2}$ ]]; then
+      # 429 限流可重试，其余 4xx 为确定结果
+      if [ "$DKM_HTTP_STATUS" = "200" ] || { [[ "$DKM_HTTP_STATUS" =~ ^4[0-9]{2}$ ]] && [ "$DKM_HTTP_STATUS" != "429" ]; }; then
         return
       fi
     fi
-    (( attempt < retries )) && sleep 0.5
+    (( attempt < retries )) && sleep "$attempt"
   done
   return 0
 }
@@ -621,9 +627,14 @@ fetch_usage() {
       printf "%s\n%s\n" "$identity" "$parsed"
       return
     fi
-  elif [[ "$DKM_HTTP_STATUS" =~ ^4[0-9]{2}$ ]] && [ "$DKM_HTTP_STATUS" != "404" ]; then
+  elif [[ "$DKM_HTTP_STATUS" =~ ^4[0-9]{2}$ ]] && [ "$DKM_HTTP_STATUS" != "404" ] && [ "$DKM_HTTP_STATUS" != "429" ]; then
     printf "%s\n" "$identity"
     printf "MODE=\nDISPLAY=\nBALANCE=0\nBALANCE_NUM=0\nTOTAL=0\nUSED=0\nEXPIRES=Invalid key\nEXPIRES_FULL=Invalid key\nEXPIRES_TS=\nEXTRA_CENTS=0\nCORE_USED=0\nOVERAGE_PREF=\nRAW=http_%s\n" "$DKM_HTTP_STATUS"
+    return
+  elif [ "$DKM_HTTP_STATUS" = "429" ]; then
+    # 重试后仍被限流：不回退旧接口，按失败处理
+    printf "%s\n" "$identity"
+    printf "MODE=\nDISPLAY=\nBALANCE=0\nBALANCE_NUM=0\nTOTAL=0\nUSED=0\nEXPIRES=?\nEXPIRES_FULL=?\nEXPIRES_TS=\nEXTRA_CENTS=0\nCORE_USED=0\nOVERAGE_PREF=\nRAW=rate_limited\n"
     return
   fi
 
@@ -636,7 +647,7 @@ fetch_usage() {
     fi
     printf "%s\n%s\n" "$identity" "$parsed"
     return
-  elif [[ "$DKM_HTTP_STATUS" =~ ^4[0-9]{2}$ ]]; then
+  elif [[ "$DKM_HTTP_STATUS" =~ ^4[0-9]{2}$ ]] && [ "$DKM_HTTP_STATUS" != "429" ]; then
     printf "%s\n" "$identity"
     printf "MODE=\nDISPLAY=\nBALANCE=0\nBALANCE_NUM=0\nTOTAL=0\nUSED=0\nEXPIRES=Invalid key\nEXPIRES_FULL=Invalid key\nEXPIRES_TS=\nEXTRA_CENTS=0\nCORE_USED=0\nOVERAGE_PREF=\nRAW=http_%s\n" "$DKM_HTTP_STATUS"
     return
@@ -822,15 +833,20 @@ fixed_text() {
 }
 
 # 用量单元格：rate 模式显示 5h/7d/30d 三段进度条，token 模式显示一条总额度进度条
-# 可见宽度固定为 (bar_len+5)*3 + gap*2
+# 可见宽度固定为 (bar_len+5)*3 + gap*2；可选第 10 个参数为三段之间的分隔串（可见宽度须等于 gap）
 render_usage_cells() {
   local mode="$1" raw="$2" five="$3" week="$4" month="$5" used="$6" total="$7" bar_len="$8" gap="$9"
   local width=$(( (bar_len + 5) * 3 + gap * 2 ))
-  local sp; sp=$(printf '%*s' "$gap" "")
+  local sp="${10:-$(printf '%*s' "$gap" "")}"
   if [[ "$raw" == http_* ]]; then
     fixed_text "Invalid key" "$width" 31; return
   elif [ -n "$raw" ]; then
-    fixed_text "Request failed" "$width" 31; return
+    # 重试后仍失败：各列只显示 -
+    local cell=$(( (width - gap * 2) / 3 ))
+    fixed_text "-" "$cell" 90; printf "%s" "$sp"
+    fixed_text "-" "$cell" 90; printf "%s" "$sp"
+    fixed_text "-" "$cell" 90
+    return
   fi
   if [ "$mode" = "rate" ]; then
     render_pct_bar "$five" "$bar_len"; printf "%s" "$sp"
@@ -850,19 +866,25 @@ render_usage_cells() {
   fixed_text "-" "$width" 90
 }
 
+# 窗口内无用量时接口不返回 windowEnd（窗口尚未开始），此时只显示 -
+window_end_label() {
+  if [ -n "$1" ]; then printf "End %s" "$1"; else printf -- "-"; fi
+}
+
 # 在进度条下一行显示每个滚动窗口的本地截止时间。
 render_deadline_cells() {
   local mode="$1" raw="$2" five_end="$3" week_end="$4" month_end="$5" cell_width="$6" gap="$7"
-  local sp; sp=$(printf '%*s' "$gap" "")
+  local sp="${8:-$(printf '%*s' "$gap" "")}"
+  if [ "$mode" != "rate" ] || [ -n "$raw" ]; then
+    # 与 render_usage_cells 一致：非 rate 行占满整个用量区域，不画分隔
+    fixed_text "" $(( cell_width * 3 + gap * 2 ))
+    return
+  fi
   local end first=1
   for end in "$five_end" "$week_end" "$month_end"; do
     (( first )) || printf "%s" "$sp"
     first=0
-    if [ "$mode" = "rate" ] && [ -z "$raw" ]; then
-      fixed_text "End ${end:--}" "$cell_width" 90
-    else
-      fixed_text "" "$cell_width"
-    fi
+    fixed_text "$(window_end_label "$end")" "$cell_width" 90
   done
 }
 
@@ -1261,14 +1283,20 @@ cmd_list() {
     fi
 
     key_disp=$(mask_key "$key")
-    (( alert )) && key_disp=$(color_red "$key_disp")
-    marker=$([ "$i" -eq "$cur" ] && echo "$(color_cyan "▶") " || echo "  ")
-
     email=$(mask_email "${email:--}")
     (( ${#email} > emailw )) && emailw=${#email}
+    # 当前 key 整行高亮，序号前加标记
+    if [ "$i" -eq "$cur" ]; then
+      marker="$(color_cyan_bold "$B_MARK")"
+      (( alert )) || key_disp=$(color_cyan_bold "$key_disp")
+      email=$(color_cyan_bold "$email")
+    else
+      marker=" "
+    fi
+    (( alert )) && key_disp=$(color_red "$key_disp")
 
-    ROW_NO+=("$i")
-    ROW_KEY+=("${marker}${key_disp}")
+    ROW_NO+=("${marker} ${i}")
+    ROW_KEY+=("$key_disp")
     ROW_EMAIL+=("$email")
     ROW_MODE+=("$mode")
     ROW_RAW+=("$raw")
@@ -1283,40 +1311,40 @@ cmd_list() {
   done
   (( emailw > 32 )) && emailw=32
 
-  # 列宽：进度条长度随终端宽度在 4~10 之间伸缩；边框与内边距共 列数*3+1
-  local now=4 keyw=16 gap=2 bar_len=10
-  local avail=$(( cols - (now + keyw + emailw + 4 * 3 + 1) ))
-  bar_len=$(( (avail - gap * 2) / 3 - 5 ))
+  # 列宽：No/Key/Email/5h/7d/30d 六列，边框与内边距共 列数*3+1；进度条长度随终端宽度在 4~10 之间伸缩
+  local now=4 keyw=13 bar_len
+  local avail=$(( cols - (now + keyw + emailw + 6 * 3 + 1) ))
+  bar_len=$(( avail / 3 - 5 ))
   (( bar_len > 10 )) && bar_len=10
   (( bar_len < 4 )) && bar_len=4
   local cellw=$(( bar_len + 5 ))
-  local usagew=$(( cellw * 3 + gap * 2 ))
+  # 用量三列之间的分隔与 table_row 保持一致，便于 token 模式跨列显示
+  local sep=" $(color_code 90 "$B_V") "
 
-  local usage_head
-  usage_head=$(printf "%-*s%*s%-*s%*s%-*s" "$cellw" "5h" "$gap" "" "$cellw" "7d" "$gap" "" "$cellw" "30d")
-
-  table_rule "$B_TL" "$B_TT" "$B_TR" "$now" "$keyw" "$emailw" "$usagew"
+  table_rule "$B_TL" "$B_TT" "$B_TR" "$now" "$keyw" "$emailw" "$cellw" "$cellw" "$cellw"
   table_row \
     "$(pad_cell "$(color_black_bold "No")" "$now")" \
     "$(pad_cell "$(color_black_bold "Key")" "$keyw")" \
     "$(pad_cell "$(color_black_bold "Email")" "$emailw")" \
-    "$(color_black_bold "$usage_head")"
-  table_rule "$B_TL_MID" "$B_X" "$B_TR_MID" "$now" "$keyw" "$emailw" "$usagew"
+    "$(pad_cell "$(color_black_bold "5h")" "$cellw")" \
+    "$(pad_cell "$(color_black_bold "7d")" "$cellw")" \
+    "$(pad_cell "$(color_black_bold "30d")" "$cellw")"
 
   local idx
   for ((idx=0; idx<${#KEYS[@]}; idx++)); do
+    table_rule "$B_TL_MID" "$B_X" "$B_TR_MID" "$now" "$keyw" "$emailw" "$cellw" "$cellw" "$cellw"
     table_row \
       "$(pad_cell "${ROW_NO[$idx]}" "$now")" \
       "$(clip_pad "${ROW_KEY[$idx]}" "$keyw")" \
       "$(clip_pad "${ROW_EMAIL[$idx]}" "$emailw")" \
-      "$(render_usage_cells "${ROW_MODE[$idx]}" "${ROW_RAW[$idx]}" "${ROW_FIVE[$idx]}" "${ROW_WEEK[$idx]}" "${ROW_MONTH[$idx]}" "${ROW_USED[$idx]}" "${ROW_TOTAL[$idx]}" "$bar_len" "$gap")"
+      "$(render_usage_cells "${ROW_MODE[$idx]}" "${ROW_RAW[$idx]}" "${ROW_FIVE[$idx]}" "${ROW_WEEK[$idx]}" "${ROW_MONTH[$idx]}" "${ROW_USED[$idx]}" "${ROW_TOTAL[$idx]}" "$bar_len" 3 "$sep")"
     table_row \
       "$(pad_cell "" "$now")" \
       "$(pad_cell "" "$keyw")" \
       "$(pad_cell "" "$emailw")" \
-      "$(render_deadline_cells "${ROW_MODE[$idx]}" "${ROW_RAW[$idx]}" "${ROW_FIVE_END[$idx]}" "${ROW_WEEK_END[$idx]}" "${ROW_MONTH_END[$idx]}" "$cellw" "$gap")"
+      "$(render_deadline_cells "${ROW_MODE[$idx]}" "${ROW_RAW[$idx]}" "${ROW_FIVE_END[$idx]}" "${ROW_WEEK_END[$idx]}" "${ROW_MONTH_END[$idx]}" "$cellw" 3 "$sep")"
   done
-  table_rule "$B_BL" "$B_TB" "$B_BR" "$now" "$keyw" "$emailw" "$usagew"
+  table_rule "$B_BL" "$B_TB" "$B_BR" "$now" "$keyw" "$emailw" "$cellw" "$cellw" "$cellw"
 }
 
 # 表格横线：table_rule 左 中 右 列宽...
@@ -1329,13 +1357,15 @@ table_rule() {
     first=0
     out+="$(repeat_str "$B_H" $((w + 2)))"
   done
-  printf "%s%s\n" "$out" "$r"
+  color_code 90 "$out$r"; printf "\n"
 }
 
 # 表格行：table_row 单元格...（单元格需已按列宽填充）
 table_row() {
-  local out="$B_V" c
-  for c in "$@"; do out+=" $c $B_V"; done
+  local v out c
+  v=$(color_code 90 "$B_V")
+  out="$v"
+  for c in "$@"; do out+=" $c $v"; done
   printf "%s\n" "$out"
 }
 
@@ -1399,7 +1429,7 @@ cmd_current() {
         7d) pct="$week"; end="$week_end";;
         30d) pct="$month"; end="$month_end";;
       esac
-      usage_value="$(render_pct_bar "$pct" "$bar_len")  $(color_code 90 "End ${end:--}")"
+      usage_value="$(render_pct_bar "$pct" "$bar_len")  $(color_code 90 "$(window_end_label "$end")")"
       table_row "$(pad_cell "$w" "$label_w")" "$(pad_cell "$usage_value" "$value_w")"
     done
   else
