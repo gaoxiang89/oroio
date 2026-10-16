@@ -69,6 +69,10 @@ esac
         self.assertIn("End 10-01 05:00", output)
         self.assertIn("End 10-08 06:30", output)
         self.assertIn("End 10-31 07:45", output)
+        self.assertIn("Email", output)
+        self.assertIn("tes...r@example.com", output)
+        self.assertNotIn("fk-1234567890abcdef", output)
+        self.assertNotIn("fk-123...cdef", output)
 
     def test_current_shows_window_ends_without_expiry_row(self):
         output = self.run_dk("current")

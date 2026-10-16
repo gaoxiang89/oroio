@@ -1208,30 +1208,27 @@ function Cmd-List {
     $gap = 3
     $cellW = $barLen + 5
     $noW = 4
-    $keyW = 13
     $emailW = 5
     for ($i = 0; $i -lt $keys.Length; $i++) {
         $len = (Mask-Email -Email ([string]$usageResults[$i].EMAIL)).Length
         if ($len -gt $emailW) { $emailW = $len }
     }
-    if ($emailW -gt 32) { $emailW = 32 }
-    $widths = @($noW, $keyW, $emailW, $cellW, $cellW, $cellW)
+    if ($emailW -gt 40) { $emailW = 40 }
+    $widths = @($noW, $emailW, $cellW, $cellW, $cellW)
     $B = $script:Box
 
     Write-TableRule $B.TL $B.TT $B.TR $widths
-    foreach ($h in @(@("No", $noW), @("Key", $keyW), @("Email", $emailW), @("5h", $cellW), @("7d", $cellW), @("30d", $cellW))) {
+    foreach ($h in @(@("No", $noW), @("Email", $emailW), @("5h", $cellW), @("7d", $cellW), @("30d", $cellW))) {
         Write-TableCell -Text $h[0] -Width $h[1] -Color White
     }
     Write-TableRowEnd
 
     for ($i = 0; $i -lt $keys.Length; $i++) {
-        $key = $keys[$i]
         $idx = $i + 1
         $usage = $usageResults[$i]
         $isCurrent = ($idx -eq $currentIdx)
 
         $marker = if ($isCurrent) { [string][char]0x25B8 } else { " " }
-        $maskedKey = Mask-Key -Key $key
 
         $alert = $false
         if ($usage.RAW -or $usage.BALANCE_NUM -le 0) { $alert = $true }
@@ -1239,18 +1236,17 @@ function Cmd-List {
 
         $rowColor = if ($isCurrent) { "Cyan" } else { "Gray" }
         $email = if ($usage.EMAIL) { Mask-Email -Email ([string]$usage.EMAIL) } else { "-" }
+        $emailColor = if (-not $usage.EMAIL) { "DarkGray" } elseif ($alert) { "Red" } else { $rowColor }
 
         Write-TableRule $B.LM $B.X $B.RM $widths
         Write-TableCell -Text ("{0} {1}" -f $marker, $idx) -Width $noW -Color $rowColor
-        Write-TableCell -Text $maskedKey -Width $keyW -Color $(if ($alert) { "Red" } else { $rowColor })
-        Write-TableCell -Text $email -Width $emailW -Color $(if ($usage.EMAIL) { $rowColor } else { "DarkGray" })
+        Write-TableCell -Text $email -Width $emailW -Color $emailColor
         Write-Host ($B.V + " ") -NoNewline -ForegroundColor DarkGray
         Write-UsageCells -Usage $usage -BarLength $barLen -Gap $gap -Bordered
         Write-Host " " -NoNewline
         Write-TableRowEnd
 
         Write-TableCell -Text "" -Width $noW
-        Write-TableCell -Text "" -Width $keyW
         Write-TableCell -Text "" -Width $emailW
         Write-Host ($B.V + " ") -NoNewline -ForegroundColor DarkGray
         Write-DeadlineCells -Usage $usage -CellWidth $cellW -Gap $gap -Bordered
@@ -1276,7 +1272,6 @@ function Cmd-Current {
     
     Write-Host ""
     Write-Host "  No:     $idx"
-    Write-Host "  Key:    $key"
     Write-Host "  Email:  $(if ($usage.EMAIL) { $usage.EMAIL } else { '-' })"
 
     if ($usage.MODE -eq "rate" -and -not $usage.RAW) {
@@ -1317,8 +1312,9 @@ function Cmd-Use {
     if ($UseArgs.Length -eq 0) {
         Write-Host "Select a key (enter number):"
         for ($i = 0; $i -lt $keys.Length; $i++) {
-            $maskedKey = Mask-Key -Key $keys[$i]
-            Write-Host "  [$($i + 1)] $maskedKey"
+            $email = Get-CachedEmail -Key $keys[$i]
+            $label = if ($email) { Mask-Email -Email $email } else { "-" }
+            Write-Host "  [$($i + 1)] $label"
         }
         $choice = Read-Host "Enter number (1-$($keys.Length))"
         $idx = [int]$choice
@@ -1332,7 +1328,9 @@ function Cmd-Use {
     }
     
     Set-CurrentIndex -Index $idx
-    Write-Host "已切换到序号 $idx ($(Mask-Key -Key $keys[$idx - 1]))"
+    $switchedEmail = Get-CachedEmail -Key $keys[$idx - 1]
+    $switchedLabel = if ($switchedEmail) { Mask-Email -Email $switchedEmail } else { "-" }
+    Write-Host "已切换到序号 $idx ($switchedLabel)"
 }
 
 function Cmd-Run {
@@ -1359,8 +1357,9 @@ function Cmd-Run {
         if ($idx -gt $keys.Length) { $idx = 1 }
         
         $key = $keys[$idx - 1]
-        $masked = Mask-Key -Key $key
-        Write-Host "Using key #$idx ($masked)"
+        $email = Get-CachedEmail -Key $key
+        $label = if ($email) { Mask-Email -Email $email } else { "-" }
+        Write-Host "Using key #$idx ($label)"
 
         $env:FACTORY_API_KEY = $key
     }

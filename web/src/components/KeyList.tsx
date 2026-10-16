@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Trash2, Plus, RefreshCw, Terminal, CheckCircle2, Copy, Circle, X, AlertTriangle, Download, Upload, ArrowUp, ArrowDown, ChevronsUpDown, Pencil, type LucideIcon } from 'lucide-react';
+import { Trash2, Plus, RefreshCw, Terminal, CheckCircle2, Circle, X, AlertTriangle, Download, Upload, ArrowUp, ArrowDown, ChevronsUpDown, Pencil, type LucideIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import { sounds } from '@/lib/sound';
-import { decryptKeys, maskKey } from '@/utils/crypto';
+import { decryptKeys } from '@/utils/crypto';
 import { fetchEncryptedKeys, fetchCurrentIndex, fetchCache, addKey, removeKey, useKey as activateKey, refreshCache, isElectron, checkDk } from '@/utils/api';
 import type { KeyInfo } from '@/utils/api';
 import { cn } from '@/lib/utils';
@@ -112,36 +112,6 @@ function SortableHeader({ field, label, align = 'left', sortConfig, onSort, clas
 }
 
 
-
-function KeyDisplay({ keyText, isCurrent, className }: { keyText: string, isCurrent: boolean, className?: string }) {
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    await navigator.clipboard.writeText(keyText);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  return (
-    <div
-      className={cn("flex items-center gap-2 group cursor-pointer select-none w-fit", className)}
-      onClick={handleCopy}
-      title="Click to copy key"
-    >
-      <code className={cn("text-sm relative font-mono transition-colors", isCurrent && "font-medium text-cyan-600 dark:text-cyan-400")}>
-        {maskKey(keyText)}
-      </code>
-      <div className="w-4 h-4 flex items-center justify-center">
-        {copied ? (
-          <CheckCircle2 className="h-3 w-3 text-green-500" />
-        ) : (
-          <Copy className="h-3 w-3 text-muted-foreground/40 opacity-0 group-hover:opacity-100 transition-all duration-200" />
-        )}
-      </div>
-    </div>
-  );
-}
 
 function NoteCell({ keyText, onUpdate }: { keyText: string; onUpdate: () => void }) {
   const [editing, setEditing] = useState(false);
@@ -558,20 +528,18 @@ export default function KeyList() {
           <colgroup>
             <col style={{ width: '4%' }} />
             <col style={{ width: '4%' }} />
-            <col style={{ width: '14%' }} />
-            <col style={{ width: '20%' }} />
-            <col style={{ width: '13%' }} />
-            <col style={{ width: '7%' }} />
+            <col style={{ width: '28%' }} />
             <col style={{ width: '15%' }} />
+            <col style={{ width: '7%' }} />
+            <col style={{ width: '16%' }} />
+            <col style={{ width: '14%' }} />
             <col style={{ width: '12%' }} />
-            <col style={{ width: '9%' }} />
           </colgroup>
           <TableHeader>
             <TableRow className="bg-muted/30 hover:bg-muted/30">
               <TableHead></TableHead>
               <TableHead className="text-xs tracking-wider">NO</TableHead>
-              <TableHead className="text-xs tracking-wider">KEY</TableHead>
-              <TableHead className="text-xs tracking-wider">ACCOUNT</TableHead>
+              <TableHead className="text-xs tracking-wider">EMAIL</TableHead>
               <TableHead className="text-xs tracking-wider">NOTE</TableHead>
               <SortableHeader field="percent" label="%" align="right" sortConfig={sortConfig} onSort={handleSort} />
               <SortableHeader field="quota" label="QUOTA" align="right" sortConfig={sortConfig} onSort={handleSort} />
@@ -618,16 +586,9 @@ export default function KeyList() {
                   <TableCell className="font-medium text-sm py-2">
                     {info.index}
                   </TableCell>
-                  <TableCell className="py-2">
-                    <KeyDisplay
-                      keyText={info.key}
-                      isCurrent={info.isCurrent}
-                    />
-                  </TableCell>
                   <TableCell className="py-2 min-w-0">
-                    <div className="min-w-0" title={`${info.usage?.email || '-'}\n${info.usage?.orgId || '-'}`}>
-                      <div className="text-xs truncate">{info.usage?.email || '-'}</div>
-                      <div className="text-[10px] font-mono text-muted-foreground truncate">{info.usage?.orgId || '-'}</div>
+                    <div className="min-w-0 truncate text-xs" title={info.usage?.email || '-'}>
+                      {info.usage?.email || '-'}
                     </div>
                   </TableCell>
                   <TableCell className="py-2">

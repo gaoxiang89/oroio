@@ -1,7 +1,7 @@
 import { Tray, Menu, nativeImage, app, NativeImage, BrowserWindow } from 'electron';
 import * as path from 'path';
 import { createMainWindow } from './index';
-import { useKey, maskKey, getKeyList, type KeyInfo } from './keyManager';
+import { useKey, getKeyList, type KeyInfo } from './keyManager';
 
 function notifyWebContents(): void {
   BrowserWindow.getAllWindows().forEach(win => {
@@ -49,23 +49,26 @@ function formatUsage(info: KeyInfo): string {
   return `${formatNum(used)}/${formatNum(total)}`;
 }
 
+function accountLabel(info: KeyInfo): string {
+  const email = info.usage?.email?.trim();
+  return email || '-';
+}
+
 function buildContextMenu(keys: KeyInfo[]): Menu {
   const template: Electron.MenuItemConstructorOptions[] = [];
-  const current = keys.find(k => k.isCurrent);
-  const others = keys.filter(k => !k.isCurrent);
-  
-  // All keys in one line each
+
   for (const info of keys) {
     const valid = isValidKey(info);
     let label: string;
+    const account = accountLabel(info);
     if (valid) {
       const percent = getPercent(info);
       const usage = formatUsage(info);
       const mark = info.isCurrent ? '●' : '○';
-      label = `${mark}  ${maskKey(info.key)}\t${getProgressBar(percent, 8)}  ${usage}`;
+      label = `${mark}  ${account}\t${getProgressBar(percent, 8)}  ${usage}`;
     } else {
       const mark = info.isCurrent ? '●' : '○';
-      label = `${mark}  ${maskKey(info.key)}\t${getProgressBar(0, 8)}  Invalid`;
+      label = `${mark}  ${account}\t${getProgressBar(0, 8)}  Invalid`;
     }
     template.push({
       label,
