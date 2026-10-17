@@ -2,7 +2,7 @@
 # droid key manager: 管理 Factory droid API keys、查询用量、自动轮换
 set -euo pipefail
 
-DKM_VERSION="1.1.0"
+DKM_VERSION="1.1.1"
 DKM_HOME="$HOME/.oroio"
 KEYS_ENC_FILE="$DKM_HOME/keys.enc"   # 加密存储的 keys
 CURRENT_FILE="$DKM_HOME/current"     # 保存当前key的行号（从1开始）
@@ -1638,9 +1638,7 @@ cmd_run() {
       usage_text=$(render_usage_text "$used" "$total" "$balnum")
     fi
     [[ "$raw" == http_* ]] && usage_text="0/0"
-    printf "Using key #%d (%s): %s %s\n" "$idx" "$label" "$bar" "$usage_text" >&2
   else
-    printf "Using key #%d (%s)\n" "$idx" "$label" >&2
     # 后台异步刷新缓存
     ( fetch_all_infos; cache_save_infos ) &>/dev/null &
   fi

@@ -18,7 +18,7 @@ if ($args.Count -ge 1) {
 $ErrorActionPreference = "Stop"
 
 # Configuration
-$script:DKM_VERSION = "1.1.0"
+$script:DKM_VERSION = "1.1.1"
 $script:OROIO_DIR = Join-Path $env:USERPROFILE ".oroio"
 $script:KEYS_FILE = Join-Path $script:OROIO_DIR "keys.enc"
 $script:CURRENT_FILE = Join-Path $script:OROIO_DIR "current"
@@ -1505,7 +1505,6 @@ function Cmd-Run {
         $key = $keys[$idx - 1]
         $email = Get-CachedEmail -Key $key
         $label = if ($email) { Mask-Email -Email $email } else { "-" }
-        [Console]::Error.WriteLine("Using key #$idx ($label)")
 
         $env:FACTORY_API_KEY = $key
     }
