@@ -1333,6 +1333,150 @@ function Cmd-Use {
     Write-Host "已切换到序号 $idx ($switchedLabel)"
 }
 
+function ConvertTo-CommandLineArgument {
+    param([string]$Argument)
+
+    # CommandLineToArgvW quoting, shared by Windows PowerShell 5.1.
+    # PowerShell 7 can pass argv directly and does not need this.
+    if ($null -eq $Argument) { $Argument = '' }
+
+    $needsQuotes = ($Argument.Length -eq 0)
+    if (-not $needsQuotes) {
+        for ($i = 0; $i -lt $Argument.Length; $i++) {
+            $ch = [char]$Argument[$i]
+            if ($ch -eq '"' -or [char]::IsWhiteSpace($ch)) {
+                $needsQuotes = $true
+                break
+            }
+        }
+    }
+    if (-not $needsQuotes) { return $Argument }
+
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.Append('"')
+    $idx = 0
+    while ($idx -lt $Argument.Length) {
+        $c = [char]$Argument[$idx]
+        $idx++
+        if ($c -eq '\') {
+            $numBackslash = 1
+            while ($idx -lt $Argument.Length -and [char]$Argument[$idx] -eq '\') {
+                $idx++
+                $numBackslash++
+            }
+            if ($idx -ge $Argument.Length) {
+                [void]$sb.Append(('\' * ($numBackslash * 2)))
+            }
+            elseif ([char]$Argument[$idx] -eq '"') {
+                [void]$sb.Append(('\' * (($numBackslash * 2) + 1)))
+                [void]$sb.Append('"')
+                $idx++
+            }
+            else {
+                [void]$sb.Append(('\' * $numBackslash))
+            }
+        }
+        elseif ($c -eq '"') {
+            [void]$sb.Append('\"')
+        }
+        else {
+            [void]$sb.Append($c)
+        }
+    }
+    [void]$sb.Append('"')
+    return $sb.ToString()
+}
+
+function ConvertTo-WindowsCommandLine {
+    param([string[]]$Arguments)
+
+    $safeArgs = @()
+    if ($PSBoundParameters.ContainsKey('Arguments') -and $null -ne $Arguments) {
+        $safeArgs = @($Arguments)
+    }
+
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($arg in $safeArgs) {
+        if ($sb.Length -gt 0) { [void]$sb.Append(' ') }
+        [void]$sb.Append((ConvertTo-CommandLineArgument -Argument ([string]$arg)))
+    }
+    return $sb.ToString()
+}
+
+function Invoke-InheritedProcess {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+        [string[]]$ArgumentList
+    )
+
+    # `&` decodes native stdout as text and writes it back out. Windows
+    # PowerShell 5.1 then emits UTF-16 when stdout is a pipe; PowerShell 7
+    # emits UTF-8, but still line-buffers. ACP needs the original bytes.
+    $safeArgs = @()
+    if ($PSBoundParameters.ContainsKey('ArgumentList') -and $null -ne $ArgumentList) {
+        $safeArgs = @($ArgumentList)
+    }
+
+    $location = Get-Location
+    if ($location.Provider.Name -eq 'FileSystem') {
+        [System.IO.Directory]::SetCurrentDirectory($location.Path)
+    }
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.UseShellExecute = $false
+    $createNoWindow = $true
+    try {
+        # A console stays attached in a terminal. A redirected pipe must not
+        # grow a new console, or the GUI client loses the byte stream.
+        $createNoWindow = [Console]::IsOutputRedirected -or [Console]::IsErrorRedirected
+    }
+    catch {
+        $createNoWindow = $true
+    }
+    $psi.CreateNoWindow = [bool]$createNoWindow
+    if ($location.Provider.Name -eq 'FileSystem') {
+        $psi.WorkingDirectory = $location.Path
+    }
+
+    $ext = [System.IO.Path]::GetExtension($FilePath).ToLowerInvariant()
+    if ($ext -eq '.cmd' -or $ext -eq '.bat') {
+        $comspec = $env:ComSpec
+        if ([string]::IsNullOrWhiteSpace($comspec)) {
+            $comspec = Join-Path $env:SystemRoot 'System32\cmd.exe'
+        }
+        $psi.FileName = $comspec
+        $command = ConvertTo-WindowsCommandLine -Arguments (@($FilePath) + $safeArgs)
+        # /d skips AutoRun, which can write on stdout. /s strips one outer
+        # quote pair so quotes inside the command survive.
+        $psi.Arguments = '/d /s /c "' + $command + '"'
+    }
+    else {
+        $psi.FileName = $FilePath
+        # ArgumentList exists on PowerShell 7 (.NET Core) and not on 5.1.
+        $argumentListProp = [System.Diagnostics.ProcessStartInfo].GetProperty('ArgumentList')
+        if ($null -ne $argumentListProp) {
+            $list = $argumentListProp.GetValue($psi)
+            foreach ($arg in $safeArgs) {
+                [void]$list.Add([string]$arg)
+            }
+        }
+        else {
+            $psi.Arguments = ConvertTo-WindowsCommandLine -Arguments $safeArgs
+        }
+    }
+
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    if ($null -eq $proc) { throw "无法启动 $FilePath" }
+    try {
+        $null = $proc.WaitForExit()
+        return [int]$proc.ExitCode
+    }
+    finally {
+        $proc.Dispose()
+    }
+}
+
 function Cmd-Run {
     param([string[]]$RunArgs)
     
@@ -1346,7 +1490,8 @@ function Cmd-Run {
     $cmd = $RunArgs[0]
     $cmdArgs = @()
     if ($RunArgs.Length -gt 1) {
-        $cmdArgs = $RunArgs[1..($RunArgs.Length - 1)]
+        # A one-element range is a scalar in Windows PowerShell 5.1.
+        $cmdArgs = @($RunArgs[1..($RunArgs.Length - 1)])
     }
 
     if ($keys.Length -eq 0) {
@@ -1367,8 +1512,15 @@ function Cmd-Run {
 
     $cmdApp = Get-Command $cmd -CommandType Application,ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($cmdApp) {
-        & $cmdApp.Source @cmdArgs
-        exit $LASTEXITCODE
+        $ext = [System.IO.Path]::GetExtension($cmdApp.Source).ToLowerInvariant()
+        if ($ext -eq '.ps1') {
+            & $cmdApp.Source @($cmdArgs)
+            $code = $LASTEXITCODE
+            if ($null -eq $code) { $code = 0 }
+            exit $code
+        }
+        $code = Invoke-InheritedProcess -FilePath $cmdApp.Source -ArgumentList $cmdArgs
+        exit $code
     }
 
     $cmdInfo = Get-Command $cmd -ErrorAction SilentlyContinue

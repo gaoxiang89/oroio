@@ -76,6 +76,12 @@ catch {
 $shimUrl = "https://raw.githubusercontent.com/gaoxiang89/oroio/main/bin/droid-dk.cmd"
 $shimPath = Join-Path $INSTALL_DIR "droid-dk.cmd"
 Invoke-WebRequest -Uri "$shimUrl`?ts=$ts" -OutFile $shimPath -UseBasicParsing
+# cmd.exe parses CRLF. The download is kept as bytes and rewritten without a BOM.
+$shimBytes = [System.IO.File]::ReadAllBytes($shimPath)
+$shimText = [System.Text.Encoding]::UTF8.GetString($shimBytes).TrimStart([char]0xFEFF)
+$shimText = $shimText -replace "`r`n", "`n" -replace "`n", "`r`n"
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllBytes($shimPath, $utf8NoBom.GetBytes($shimText))
 
 # Add to PATH if not already
 $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
@@ -127,6 +133,7 @@ Write-Host ""
 Write-Success "Installation complete!"
 Write-Host ""
 Write-Host "  dk.ps1 installed to: $dkPath"
+Write-Host "  droid-dk.cmd installed to: $shimPath"
 Write-Host "  byok.py installed to: $byokPath"
 Write-Host "  Data directory: $OROIO_DIR"
 Write-Host ""

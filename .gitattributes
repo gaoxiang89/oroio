@@ -1,3 +1,6 @@
 bin/dk text eol=lf
 bin/droid-dk text eol=lf
 bin/*.cmd text eol=crlf
+# Store the shim unchanged. `bin/*.cmd text eol=crlf` would normalize the
+# blob to LF, and GitHub raw would serve that LF file to install.ps1.
+bin/droid-dk.cmd -text -eol
