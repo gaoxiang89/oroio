@@ -31,6 +31,7 @@ path_has() {
 
 DK_TMPDIR=""
 DK_SRC=""
+DROID_DK_SRC=""
 SERVE_SRC=""
 BYOK_SRC=""
 WEB_DIR=""
@@ -73,6 +74,7 @@ fetch_web_assets() {
 locate_sources() {
   local base="https://raw.githubusercontent.com/gaoxiang89/oroio/main/bin"
   fetch_component "dk" "$base/dk" DK_SRC
+  fetch_component "droid-dk" "$base/droid-dk" DROID_DK_SRC
   fetch_component "serve.py" "$base/serve.py" SERVE_SRC
   fetch_component "byok.py" "$base/byok.py" BYOK_SRC
   fetch_web_assets
@@ -138,6 +140,7 @@ main() {
 
   install -d "$prefix"
   install -m 0755 "$DK_SRC" "$prefix/dk"
+  install -m 0755 "$DROID_DK_SRC" "$prefix/droid-dk"
   install -m 0755 "$SERVE_SRC" "$prefix/serve.py"
   install -m 0755 "$BYOK_SRC" "$prefix/byok.py"
 
@@ -155,6 +158,7 @@ main() {
 
   printf '\n安装完成:\n'
   printf '  - 已将 dk 安装到 %s/dk\n' "$prefix"
+  printf '  - 已将 droid-dk 安装到 %s/droid-dk（供 Waku 等 GUI 客户端使用）\n' "$prefix"
   printf '  - 已将 serve.py 安装到 %s/serve.py\n' "$prefix"
   printf '  - 已将 byok.py 安装到 %s/byok.py\n' "$prefix"
   printf '  - 已将 web 资源安装到 %s\n' "$web_dest"

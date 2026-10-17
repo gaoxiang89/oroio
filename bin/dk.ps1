@@ -1350,7 +1350,8 @@ function Cmd-Run {
     }
 
     if ($keys.Length -eq 0) {
-        Write-Host "No keys configured, starting without FACTORY_API_KEY."
+        # stdout belongs to the wrapped command (ACP clients read JSON from it).
+        [Console]::Error.WriteLine("No keys configured, starting without FACTORY_API_KEY.")
         Remove-Item Env:FACTORY_API_KEY -ErrorAction SilentlyContinue
     } else {
         $idx = Get-CurrentIndex
@@ -1359,7 +1360,7 @@ function Cmd-Run {
         $key = $keys[$idx - 1]
         $email = Get-CachedEmail -Key $key
         $label = if ($email) { Mask-Email -Email $email } else { "-" }
-        Write-Host "Using key #$idx ($label)"
+        [Console]::Error.WriteLine("Using key #$idx ($label)")
 
         $env:FACTORY_API_KEY = $key
     }
@@ -1367,7 +1368,7 @@ function Cmd-Run {
     $cmdApp = Get-Command $cmd -CommandType Application,ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($cmdApp) {
         & $cmdApp.Source @cmdArgs
-        return
+        exit $LASTEXITCODE
     }
 
     $cmdInfo = Get-Command $cmd -ErrorAction SilentlyContinue
@@ -1376,6 +1377,7 @@ function Cmd-Run {
     }
 
     & $cmd @cmdArgs
+    if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }
 }
 
 function Cmd-Remove {

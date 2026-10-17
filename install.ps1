@@ -71,6 +71,12 @@ catch {
     throw "Current repository web-dist is unavailable; installation stopped."
 }
 
+# Download droid-dk.cmd: a real executable that GUI clients (such as Waku) can
+# launch instead of the PowerShell `droid` function
+$shimUrl = "https://raw.githubusercontent.com/gaoxiang89/oroio/main/bin/droid-dk.cmd"
+$shimPath = Join-Path $INSTALL_DIR "droid-dk.cmd"
+Invoke-WebRequest -Uri "$shimUrl`?ts=$ts" -OutFile $shimPath -UseBasicParsing
+
 # Add to PATH if not already
 $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
 if ($userPath -notlike "*$INSTALL_DIR*") {

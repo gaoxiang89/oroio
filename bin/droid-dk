@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Launch droid through dk for GUI clients that cannot use the `droid` shell
+# alias. dk writes its status to stderr, so ACP JSON on stdout stays clean.
+# Do not rename this file to `droid`: dk would resolve it as droid itself.
+exec "$(dirname "$0")/dk" run droid "$@"

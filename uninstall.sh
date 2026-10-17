@@ -88,6 +88,12 @@ main() {
     summary+=("未在 $prefix 找到 dk (跳过)")
   fi
 
+  local droid_dk_path="$prefix/droid-dk"
+  if [ -e "$droid_dk_path" ]; then
+    rm -f "$droid_dk_path"
+    summary+=("已移除 $droid_dk_path")
+  fi
+
   local serve_path="$prefix/serve.py"
   if [ -e "$serve_path" ]; then
     rm -f "$serve_path"
