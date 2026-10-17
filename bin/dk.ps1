@@ -18,7 +18,7 @@ if ($args.Count -ge 1) {
 $ErrorActionPreference = "Stop"
 
 # Configuration
-$script:DKM_VERSION = "1.0.1"
+$script:DKM_VERSION = "1.1.0"
 $script:OROIO_DIR = Join-Path $env:USERPROFILE ".oroio"
 $script:KEYS_FILE = Join-Path $script:OROIO_DIR "keys.enc"
 $script:CURRENT_FILE = Join-Path $script:OROIO_DIR "current"
