@@ -43,8 +43,22 @@ jobs:
           ./bin/dk.ps1 add "sk-ci-1"
           ./bin/dk.ps1 add "sk-ci-2"
           ./bin/dk.ps1 use 2
-          $out = ./bin/dk.ps1 run pwsh -NoLogo -NoProfile -Command 'Write-Output $env:FACTORY_API_KEY'
-          if ($out.Trim() -ne 'sk-ci-2') { Write-Error "dk run failed: $out" }
+          # dk run inherits the OS stdout handle, so assigning the script's
+          # success stream does not see the child output. Read the pipe.
+          $outFile = Join-Path $env:RUNNER_TEMP 'dk-run-out.txt'
+          $errFile = Join-Path $env:RUNNER_TEMP 'dk-run-err.txt'
+          $proc = Start-Process -FilePath pwsh.exe -ArgumentList @(
+            '-NoLogo', '-NoProfile', '-NonInteractive',
+            '-File', (Resolve-Path './bin/dk.ps1').Path,
+            'run', 'pwsh.exe', '-NoLogo', '-NoProfile', '-Command',
+            'Write-Output $env:FACTORY_API_KEY'
+          ) -Wait -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+          $out = Get-Content -LiteralPath $outFile -Raw
+          $err = Get-Content -LiteralPath $errFile -Raw -ErrorAction SilentlyContinue
+          if ($null -eq $out) { $out = '' }
+          if ($proc.ExitCode -ne 0 -or $out.Trim() -ne 'sk-ci-2') {
+            throw "dk run failed exit=$($proc.ExitCode) stdout=[$out] stderr=[$err]"
+          }
 
       - name: Install web dependencies
         working-directory: web
