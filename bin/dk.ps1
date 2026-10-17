@@ -18,7 +18,7 @@ if ($args.Count -ge 1) {
 $ErrorActionPreference = "Stop"
 
 # Configuration
-$script:DKM_VERSION = "1.1.1"
+$script:DKM_VERSION = "1.1.2"
 $script:OROIO_DIR = Join-Path $env:USERPROFILE ".oroio"
 $script:KEYS_FILE = Join-Path $script:OROIO_DIR "keys.enc"
 $script:CURRENT_FILE = Join-Path $script:OROIO_DIR "current"
@@ -1425,16 +1425,7 @@ function Invoke-InheritedProcess {
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.UseShellExecute = $false
-    $createNoWindow = $true
-    try {
-        # A console stays attached in a terminal. A redirected pipe must not
-        # grow a new console, or the GUI client loses the byte stream.
-        $createNoWindow = [Console]::IsOutputRedirected -or [Console]::IsErrorRedirected
-    }
-    catch {
-        $createNoWindow = $true
-    }
-    $psi.CreateNoWindow = [bool]$createNoWindow
+    $psi.CreateNoWindow = $false
     if ($location.Provider.Name -eq 'FileSystem') {
         $psi.WorkingDirectory = $location.Path
     }
