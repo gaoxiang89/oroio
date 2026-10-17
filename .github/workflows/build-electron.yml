@@ -43,21 +43,21 @@ jobs:
           ./bin/dk.ps1 add "sk-ci-1"
           ./bin/dk.ps1 add "sk-ci-2"
           ./bin/dk.ps1 use 2
-          # dk run inherits the OS stdout handle, so assigning the script's
-          # success stream does not see the child output. Read the pipe.
-          $outFile = Join-Path $env:RUNNER_TEMP 'dk-run-out.txt'
+          # dk run inherits OS handles, so the script success stream is not the
+          # child stdout. Have the child write the key to a file instead.
+          $marker = Join-Path $env:RUNNER_TEMP 'factory-key.txt'
           $errFile = Join-Path $env:RUNNER_TEMP 'dk-run-err.txt'
+          Remove-Item $marker, $errFile -ErrorAction SilentlyContinue
+          $cmd = "Set-Content -LiteralPath '$marker' -Encoding ascii -Value `$env:FACTORY_API_KEY -NoNewline"
           $proc = Start-Process -FilePath pwsh.exe -ArgumentList @(
             '-NoLogo', '-NoProfile', '-NonInteractive',
             '-File', (Resolve-Path './bin/dk.ps1').Path,
-            'run', 'pwsh.exe', '-NoLogo', '-NoProfile', '-Command',
-            'Write-Output $env:FACTORY_API_KEY'
-          ) -Wait -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
-          $out = Get-Content -LiteralPath $outFile -Raw
-          $err = Get-Content -LiteralPath $errFile -Raw -ErrorAction SilentlyContinue
-          if ($null -eq $out) { $out = '' }
-          if ($proc.ExitCode -ne 0 -or $out.Trim() -ne 'sk-ci-2') {
-            throw "dk run failed exit=$($proc.ExitCode) stdout=[$out] stderr=[$err]"
+            'run', 'pwsh.exe', '-NoLogo', '-NoProfile', '-Command', $cmd
+          ) -Wait -PassThru -RedirectStandardError $errFile
+          $out = if (Test-Path -LiteralPath $marker) { Get-Content -LiteralPath $marker -Raw } else { '' }
+          $err = if (Test-Path -LiteralPath $errFile) { Get-Content -LiteralPath $errFile -Raw } else { '' }
+          if ($proc.ExitCode -ne 0 -or $out -ne 'sk-ci-2') {
+            throw "dk run failed exit=$($proc.ExitCode) marker=[$out] stderr=[$err]"
           }
 
       - name: Install web dependencies
